@@ -184,6 +184,7 @@ class Daemon:
             "week": self.summary("week"),
             "month": self.summary("month"),
             "budgets": self._resolved_budgets(),
+            "tools": self.store.tools_seen(),
             "updated": time.time(),
         }
 

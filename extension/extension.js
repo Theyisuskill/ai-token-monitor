@@ -48,28 +48,25 @@ const REFRESH_INTERVAL_S = 120;
 // .ai-progress-track width in stylesheet.css).
 const TRACK_WIDTH = 300;
 
-const TOOLS = [
-    {
-        id: 'claude_code',
-        label: 'Claude Code',
-        color: '#ff8866',
-        budget5h: 'claude_5h',
-        budgetWeekly: 'claude_weekly',
-        // Fallbacks match the daemon's lowest plan tier (only used when
-        // talking to an older daemon that doesn't resolve budgets).
-        fallback5h: 15.0,
-        fallbackWeekly: 75.0,
-    },
-    {
-        id: 'gemini_cli',
-        label: 'agy',
-        color: '#66b3ff',
-        budget5h: 'gemini_5h',
-        budgetWeekly: 'gemini_weekly',
-        fallback5h: 3.0,
-        fallbackWeekly: 8.0,
-    },
-];
+// Presentation for known tools. Which tools actually appear is decided by
+// the daemon's snapshot (every tool with recorded usage), so a user with one
+// subscription sees one section and a user with three sees three. Unknown
+// tools (third-party adapters) get a generic style via toolStyle().
+const TOOL_STYLES = {
+    claude_code: {label: 'Claude Code', color: '#ff8866', prefix: 'claude'},
+    gemini_cli: {label: 'agy', color: '#66b3ff', prefix: 'gemini'},
+    codex: {label: 'Codex', color: '#7bd8b0', prefix: 'codex'},
+};
+const TOOL_ORDER = Object.keys(TOOL_STYLES);
+
+function toolStyle(id) {
+    return TOOL_STYLES[id] ?? {
+        label: id.split('_')
+            .map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' '),
+        color: '#9a9aa5',
+        prefix: id,
+    };
+}
 
 function formatTokens(n) {
     if (!Number.isFinite(n))
@@ -290,23 +287,41 @@ class Indicator extends PanelMenu.Button {
         return tData ?? {cost_usd: 0, total_tokens: 0};
     }
 
-    _budget(key, fallback) {
+    _budget(key) {
         const v = this._snapshot?.budgets?.[key];
-        return Number.isFinite(v) && v > 0 ? v : fallback;
+        return Number.isFinite(v) && v > 0 ? v : 0;
+    }
+
+    /** Tools to render: whatever the daemon has usage data for, in a stable
+     * order. Falls back to scanning the period payloads for older daemons
+     * that don't send a `tools` list. */
+    _activeTools() {
+        let ids = this._snapshot?.tools;
+        if (!Array.isArray(ids)) {
+            const seen = new Set();
+            for (const period of ['five_hours', 'today', 'week', 'month'])
+                this._snapshot?.[period]?.tools?.forEach(t => seen.add(t.tool));
+            ids = [...seen];
+        }
+        return ids.slice().sort((a, b) => {
+            const ia = TOOL_ORDER.indexOf(a), ib = TOOL_ORDER.indexOf(b);
+            return (ia < 0 ? TOOL_ORDER.length : ia) -
+                   (ib < 0 ? TOOL_ORDER.length : ib) || a.localeCompare(b);
+        });
     }
 
     /** Highest usage across all limit bars, for the at-a-glance panel label. */
     _maxPressure() {
         let max = null;
-        for (const tool of TOOLS) {
-            const pairs = [
-                ['five_hours', this._budget(tool.budget5h, tool.fallback5h)],
-                ['week', this._budget(tool.budgetWeekly, tool.fallbackWeekly)],
-            ];
-            for (const [period, budget] of pairs) {
+        for (const id of this._activeTools()) {
+            const prefix = toolStyle(id).prefix;
+            for (const [period, budget] of [
+                ['five_hours', this._budget(`${prefix}_5h`)],
+                ['week', this._budget(`${prefix}_weekly`)],
+            ]) {
                 if (!(budget > 0))
                     continue;
-                const pct = this._toolData(period, tool.id).cost_usd / budget * 100;
+                const pct = this._toolData(period, id).cost_usd / budget * 100;
                 if (max === null || pct > max)
                     max = pct;
             }
@@ -340,23 +355,37 @@ class Indicator extends PanelMenu.Button {
             return;
         }
 
-        TOOLS.forEach((tool, index) => {
+        const active = this._activeTools();
+        if (!active.length) {
+            const empty = new PopupMenu.PopupMenuItem('No usage recorded yet',
+                {reactive: false});
+            this.menu.addMenuItem(empty);
+            const hint = new PopupMenu.PopupMenuItem(
+                'Use Claude Code, agy or Codex and it will appear here',
+                {reactive: false});
+            hint.label.add_style_class_name('ai-progress-subtitle');
+            this.menu.addMenuItem(hint);
+            return;
+        }
+
+        active.forEach((id, index) => {
             if (index > 0)
                 this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
-            const week = this._toolData('week', tool.id);
-            const fiveH = this._toolData('five_hours', tool.id);
+            const style = toolStyle(id);
+            const week = this._toolData('week', id);
+            const fiveH = this._toolData('five_hours', id);
 
             // Header: colored dot + tool name, weekly spend on the right.
             const header = new PopupMenu.PopupBaseMenuItem({reactive: false});
             header.add_child(new St.Label({
                 text: '●',
-                style: `color: ${tool.color};`,
+                style: `color: ${style.color};`,
                 style_class: 'ai-tool-dot',
                 y_align: Clutter.ActorAlign.CENTER,
             }));
             header.add_child(new St.Label({
-                text: tool.label,
+                text: style.label,
                 style_class: 'ai-tool-name',
                 x_expand: true,
                 y_align: Clutter.ActorAlign.CENTER,
@@ -370,11 +399,11 @@ class Indicator extends PanelMenu.Button {
 
             this.menu.addMenuItem(new ProgressBarRow(
                 'Session (5h)', fiveH.cost_usd,
-                this._budget(tool.budget5h, tool.fallback5h),
+                this._budget(`${style.prefix}_5h`),
                 fiveH.total_tokens));
             this.menu.addMenuItem(new ProgressBarRow(
                 'Weekly', week.cost_usd,
-                this._budget(tool.budgetWeekly, tool.fallbackWeekly),
+                this._budget(`${style.prefix}_weekly`),
                 week.total_tokens));
         });
 

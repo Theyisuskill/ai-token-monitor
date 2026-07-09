@@ -39,6 +39,8 @@ DEFAULT_PRICING: list[dict[str, Any]] = [
      "cache_read": 0.31, "cache_write": 0.0},
     {"match": "gemini-*", "input": 0.30, "output": 2.50,
      "cache_read": 0.075, "cache_write": 0.0},
+    {"match": "gpt-*", "input": 1.25, "output": 10.0,
+     "cache_read": 0.125, "cache_write": 0.0},
     {"match": "*", "input": 0.0, "output": 0.0,
      "cache_read": 0.0, "cache_write": 0.0},
 ]
@@ -70,6 +72,14 @@ PLAN_PRESETS: dict[str, dict[str, Any]] = {
             "ultra": {"5h": 40.0, "weekly": 150.0},
         },
     },
+    "codex": {  # OpenAI Codex CLI (ChatGPT subscription tiers)
+        "prefix": "codex",
+        "default_plan": "plus",
+        "plans": {
+            "plus": {"5h": 10.0, "weekly": 40.0},
+            "pro":  {"5h": 60.0, "weekly": 300.0},
+        },
+    },
 }
 
 # In 'auto' budget mode, each denominator tracks the user's own observed peak
@@ -89,6 +99,7 @@ DEFAULTS: dict[str, Any] = {
     "adapters": {
         "claude_code": {"enabled": True, "root": "~/.claude/projects"},
         "gemini_cli": {"enabled": True, "root": "~/.gemini/tmp"},
+        "codex": {"enabled": True, "root": "~/.codex/sessions"},
     },
     "pricing": DEFAULT_PRICING,
     # Subscription tier per tool (keys are adapter names). Resolved against

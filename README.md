@@ -22,7 +22,8 @@ D-Bus and GNOME should work.
 │     │ new complete lines (offset-tracked tailing)                  │
 │  Adapters (plugin registry + entry points)                         │
 │     ├── claude_code   ~/.claude/projects/**/*.jsonl                │
-│     └── gemini_cli    ~/.gemini/tmp/*/chats/session-*.jsonl        │
+│     ├── gemini_cli    ~/.gemini/tmp/**  +  antigravity-cli/*.db    │
+│     └── codex         ~/.codex/sessions/**/rollout-*.jsonl         │
 │     │ UsageRecord (normalized)                                     │
 │  CostEngine (pricing rules from config.yaml)                       │
 │     │                                                              │
@@ -98,8 +99,13 @@ being hardcoded. Declare your tier and the daemon resolves the ceilings:
 plans:
   claude_code: max_20x   # pro | max_5x | max_20x  (Max = 5x / 20x the Pro cap)
   gemini_cli: pro        # Antigravity: free | pro | ultra
+  codex: plus            # OpenAI Codex CLI: plus | pro
 budget_mode: preset      # preset (use the tiers) | auto (self-calibrate)
 ```
+
+The popup only shows tools you actually use: sections appear per tool with
+recorded usage (one subscription → one section, three → three), so nothing is
+hardcoded to a particular vendor mix.
 
 `auto` ignores the tiers and instead calibrates each bar to your own busiest
 observed 5h / 7-day window — useful if you don't know your plan's equivalent

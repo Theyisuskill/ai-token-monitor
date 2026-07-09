@@ -15,6 +15,9 @@ adapters:
   gemini_cli:
     enabled: true
     root: ~/.gemini/tmp
+  codex:
+    enabled: true
+    root: ~/.codex/sessions
   # Third-party adapters (installed via pip entry points) are configured the
   # same way, keyed by their `name`.
 
@@ -26,6 +29,7 @@ adapters:
 plans:
   claude_code: pro       # pro | max_5x | max_20x   (Max = 5x / 20x the Pro cap)
   gemini_cli: free       # Antigravity ("agy"): free | pro | ultra
+  codex: plus            # OpenAI Codex CLI: plus | pro
 
 # preset = use the tiers above.
 # auto   = ignore the tiers and calibrate each bar to your own busiest observed
@@ -78,6 +82,11 @@ pricing:
     input: 0.30
     output: 2.50
     cache_read: 0.075
+    cache_write: 0.0
+  - match: "gpt-*"
+    input: 1.25
+    output: 10.0
+    cache_read: 0.125
     cache_write: 0.0
   - match: "*"          # unknown models count tokens but cost $0
     input: 0.0

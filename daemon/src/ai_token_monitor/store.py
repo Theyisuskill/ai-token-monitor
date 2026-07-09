@@ -145,6 +145,16 @@ class Store:
         totals["cost_usd"] = round(totals["cost_usd"], 4)
         return {"since": since, "tools": tools, "totals": totals}
 
+    def tools_seen(self) -> list[str]:
+        """Every tool with at least one usage record, alphabetically.
+
+        Drives the dynamic tool list in the UI: only tools the user actually
+        uses get a section, regardless of which adapters are enabled.
+        """
+        rows = self._db.execute(
+            "SELECT DISTINCT tool FROM usage ORDER BY tool").fetchall()
+        return [row[0] for row in rows]
+
     def peak_window(self, tool: str, span: float,
                     lookback_days: int = 60) -> float:
         """Largest summed cost_usd inside any rolling ``span``-second window
