@@ -1,7 +1,7 @@
 # Developer install (per-user, no root) and packaging helpers.
 
-UUID        := ai-token-monitor@franycraft.github.io
-DBUS_NAME   := io.github.franycraft.AITokenMonitor
+UUID        := ai-token-monitor@theyisuskill.github.io
+DBUS_NAME   := io.github.theyisuskill.AITokenMonitor
 EXT_DIR     := $(HOME)/.local/share/gnome-shell/extensions/$(UUID)
 UNIT_DIR    := $(HOME)/.config/systemd/user
 DBUS_DIR    := $(HOME)/.local/share/dbus-1/services

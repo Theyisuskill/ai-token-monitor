@@ -1,12 +1,12 @@
-%global ext_uuid ai-token-monitor@franycraft.github.io
-%global dbus_name io.github.franycraft.AITokenMonitor
+%global ext_uuid ai-token-monitor@theyisuskill.github.io
+%global dbus_name io.github.theyisuskill.AITokenMonitor
 
 Name:           ai-token-monitor
 Version:        0.1.0
 Release:        1%{?dist}
 Summary:        Unified token-usage monitor for local AI CLI tools
 License:        GPL-3.0-or-later
-URL:            https://github.com/franycraft/ai-token-monitor
+URL:            https://github.com/theyisuskill/ai-token-monitor
 Source0:        %{url}/archive/v%{version}/%{name}-%{version}.tar.gz
 
 BuildArch:      noarch
@@ -81,5 +81,5 @@ install -pm0644 extension/extension.js extension/metadata.json \
 %{_datadir}/gnome-shell/extensions/%{ext_uuid}/
 
 %changelog
-* Wed Jul 08 2026 franycraft <franycraft@gmail.com> - 0.1.0-1
+* Wed Jul 08 2026 theyisuskill <theyisuskill@gmail.com> - 0.1.0-1
 - Initial package

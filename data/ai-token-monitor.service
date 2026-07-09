@@ -1,10 +1,10 @@
 [Unit]
 Description=AI Token Monitor daemon (unified token-usage collector)
-Documentation=https://github.com/franycraft/ai-token-monitor
+Documentation=https://github.com/theyisuskill/ai-token-monitor
 
 [Service]
 Type=dbus
-BusName=io.github.franycraft.AITokenMonitor
+BusName=io.github.theyisuskill.AITokenMonitor
 # ExecStartPre runs inside the SAME mount namespace as ExecStart, which is
 # set up (via ProtectSystem=strict + ReadWritePaths) before any process is
 # spawned — so a plain ExecStartPre=mkdir never gets a chance to run if its

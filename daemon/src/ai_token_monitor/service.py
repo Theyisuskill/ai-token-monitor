@@ -1,4 +1,4 @@
-"""D-Bus surface: io.github.franycraft.AITokenMonitor on the session bus.
+"""D-Bus surface: io.github.theyisuskill.AITokenMonitor on the session bus.
 
 The interface is deliberately string-typed (JSON payloads): it keeps the
 introspection XML trivial for GJS consumers and lets the schema evolve
@@ -22,9 +22,9 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-BUS_NAME = "io.github.franycraft.AITokenMonitor"
-OBJECT_PATH = "/io/github/franycraft/AITokenMonitor"
-IFACE_NAME = "io.github.franycraft.AITokenMonitor1"
+BUS_NAME = "io.github.theyisuskill.AITokenMonitor"
+OBJECT_PATH = "/io/github/theyisuskill/AITokenMonitor"
+IFACE_NAME = "io.github.theyisuskill.AITokenMonitor1"
 
 VALID_PERIODS = ("5h", "today", "week", "month", "all")
 

@@ -1,8 +1,8 @@
 {
-    "uuid": "ai-token-monitor@franycraft.github.io",
+    "uuid": "ai-token-monitor@theyisuskill.github.io",
     "name": "AI Token Monitor",
     "description": "Shows unified token usage and estimated cost of local AI CLI tools (Claude Code, Gemini CLI, ...) in the top bar. Requires the ai-token-monitor daemon.",
     "shell-version": ["45", "46", "47", "48", "49", "50"],
-    "url": "https://github.com/franycraft/ai-token-monitor",
+    "url": "https://github.com/theyisuskill/ai-token-monitor",
     "version-name": "0.1.0"
 }

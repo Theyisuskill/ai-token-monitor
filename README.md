@@ -13,7 +13,7 @@ D-Bus and GNOME should work.
 │ GNOME Shell top bar         ⬚ 12.4M · $3.12                        │
 │                             (extension/ — GJS, ESM)                │
 └──────────────▲─────────────────────────────────────────────────────┘
-               │ D-Bus session bus: io.github.franycraft.AITokenMonitor
+               │ D-Bus session bus: io.github.theyisuskill.AITokenMonitor
                │ GetSnapshot() / GetSummary(period) / signal UsageUpdated
 ┌──────────────┴─────────────────────────────────────────────────────┐
 │ ai-token-monitor daemon (daemon/ — Python, GLib main loop)         │
@@ -70,9 +70,9 @@ Useful checks:
 
 ```console
 $ ai-token-monitor --summary today | jq .totals
-$ busctl --user call io.github.franycraft.AITokenMonitor \
-    /io/github/franycraft/AITokenMonitor \
-    io.github.franycraft.AITokenMonitor1 GetSnapshot
+$ busctl --user call io.github.theyisuskill.AITokenMonitor \
+    /io/github/theyisuskill/AITokenMonitor \
+    io.github.theyisuskill.AITokenMonitor1 GetSnapshot
 $ journalctl --user -u ai-token-monitor -f
 ```
 

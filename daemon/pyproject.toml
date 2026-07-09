@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Unified local token-usage collector for AI CLI tools (Claude Code, Gemini CLI, ...)"
 license = "GPL-3.0-or-later"
 requires-python = ">=3.11"
-authors = [{ name = "franycraft", email = "franycraft@gmail.com" }]
+authors = [{ name = "theyisuskill", email = "theyisuskill@gmail.com" }]
 dependencies = [
     "PyGObject>=3.42",
     "dasbus>=1.7",
@@ -16,7 +16,7 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/franycraft/ai-token-monitor"
+Homepage = "https://github.com/theyisuskill/ai-token-monitor"
 
 [project.scripts]
 ai-token-monitor = "ai_token_monitor.cli:main"

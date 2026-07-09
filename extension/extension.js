@@ -15,12 +15,12 @@ import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 
-const BUS_NAME = 'io.github.franycraft.AITokenMonitor';
-const OBJECT_PATH = '/io/github/franycraft/AITokenMonitor';
+const BUS_NAME = 'io.github.theyisuskill.AITokenMonitor';
+const OBJECT_PATH = '/io/github/theyisuskill/AITokenMonitor';
 
 const MONITOR_IFACE = `
 <node>
-  <interface name="io.github.franycraft.AITokenMonitor1">
+  <interface name="io.github.theyisuskill.AITokenMonitor1">
     <method name="GetSummary">
       <arg type="s" direction="in" name="period"/>
       <arg type="s" direction="out" name="summary"/>
