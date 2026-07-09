@@ -1,0 +1,28 @@
+[Unit]
+Description=AI Token Monitor daemon (unified token-usage collector)
+Documentation=https://github.com/franycraft/ai-token-monitor
+
+[Service]
+Type=dbus
+BusName=io.github.franycraft.AITokenMonitor
+# ExecStartPre runs inside the SAME mount namespace as ExecStart, which is
+# set up (via ProtectSystem=strict + ReadWritePaths) before any process is
+# spawned — so a plain ExecStartPre=mkdir never gets a chance to run if its
+# own target directory doesn't exist yet: namespace setup fails first. The
+# "+" prefix runs this one command unsandboxed, and ReadWritePaths=- tolerates
+# the path being absent when the namespace is built.
+ExecStartPre=+/usr/bin/mkdir -p %h/.local/share/ai-token-monitor
+ExecStart=/usr/bin/ai-token-monitor
+Restart=on-failure
+RestartSec=5
+Slice=background.slice
+
+# Hardening: the daemon only reads AI tool logs and writes its own data dir.
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=-%h/.local/share/ai-token-monitor
+PrivateTmp=true
+MemoryMax=256M
+
+[Install]
+WantedBy=default.target

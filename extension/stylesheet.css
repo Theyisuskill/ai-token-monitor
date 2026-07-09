@@ -1,0 +1,48 @@
+/* Dark Theme Cyberpunk Aesthetics for Progress Bars */
+
+.ai-token-monitor-label {
+    font-weight: bold;
+    margin-left: 6px;
+}
+
+.ai-progress-container {
+    padding: 8px 12px;
+    spacing: 4px;
+}
+
+.ai-progress-title {
+    font-weight: bold;
+    font-size: 14px;
+    color: #e0e0e0;
+}
+
+.ai-progress-percent {
+    font-weight: bold;
+    font-size: 14px;
+    color: #e0e0e0;
+}
+
+.ai-progress-track {
+    height: 12px;
+    background-color: #333344;
+    border-radius: 4px;
+    margin-top: 6px;
+    margin-bottom: 6px;
+    overflow: hidden; /* ensures the fill respects the track border radius */
+}
+
+.ai-progress-fill {
+    background-color: #a8a8ff; /* Fable purple / lavender */
+    border-radius: 4px;
+    height: 12px;
+    /* transition: width 0.3s ease-in-out; */
+}
+
+.ai-progress-full {
+    background-color: #ff5555; /* Warning red if 100% or over budget */
+}
+
+.ai-progress-subtitle {
+    font-size: 12px;
+    color: #888899;
+}

@@ -1,0 +1,4 @@
+[D-BUS Service]
+Name=io.github.franycraft.AITokenMonitor
+Exec=/usr/bin/ai-token-monitor
+SystemdService=ai-token-monitor.service

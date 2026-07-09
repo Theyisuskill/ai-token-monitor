@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+build/
+*.shell-extension.zip
+packaging/*.src.rpm
+.venv/

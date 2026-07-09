@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ai-token-monitor"
+version = "0.1.0"
+description = "Unified local token-usage collector for AI CLI tools (Claude Code, Gemini CLI, ...)"
+license = "GPL-3.0-or-later"
+requires-python = ">=3.11"
+authors = [{ name = "franycraft", email = "franycraft@gmail.com" }]
+dependencies = [
+    "PyGObject>=3.42",
+    "dasbus>=1.7",
+    "PyYAML>=6.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/franycraft/ai-token-monitor"
+
+[project.scripts]
+ai-token-monitor = "ai_token_monitor.cli:main"
+
+# Third-party packages can ship extra adapters by exposing an entry point in
+# this group; the daemon discovers and registers them at startup.
+[project.entry-points."ai_token_monitor.adapters"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
