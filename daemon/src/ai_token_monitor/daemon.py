@@ -64,12 +64,26 @@ class Daemon:
                  len(self.adapters), ", ".join(a.name for a in self.adapters))
         self._loop.run()
 
-        # Teardown
+        # Teardown. A clean stop must exit 0: with Restart=on-failure a non-zero
+        # exit here gets bounced (and can trip systemd's start limit). dasbus's
+        # disconnect() does a synchronous ReleaseName round-trip that raises
+        # "the connection is closed" when the session bus is already going away
+        # (SIGTERM during logout, or a fast restart), so each step is guarded.
         for _adapter, watcher in self.watchers:
-            watcher.stop()
+            try:
+                watcher.stop()
+            except Exception:
+                log.exception("watcher stop failed during shutdown")
         if self._bus is not None:
-            self._bus.disconnect()
-        self.store.close()
+            try:
+                self._bus.disconnect()
+            except Exception:
+                log.warning("bus disconnect during shutdown failed "
+                            "(connection already closing)")
+        try:
+            self.store.close()
+        except Exception:
+            log.exception("store close failed during shutdown")
 
     def _quit(self) -> bool:
         log.info("Shutting down")
