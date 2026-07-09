@@ -40,17 +40,36 @@ const MONITOR_IFACE = `
 const MonitorProxy = Gio.DBusProxy.makeProxyWrapper(MONITOR_IFACE);
 
 // Fallback poll, in case a signal is missed (daemon restart, race at login).
+// Opening the menu always forces a fresh rescan, so this is just a safety net.
 const REFRESH_INTERVAL_S = 120;
 
-const TOOL_LABELS = {
-    claude_code: 'Claude Code',
-    gemini_cli: 'agy',
-};
+// St CSS cannot size widgets with percentage widths, so the progress fill is
+// computed in pixels against this fixed track width (must match the
+// .ai-progress-track width in stylesheet.css).
+const TRACK_WIDTH = 300;
 
-function toolLabel(name) {
-    return TOOL_LABELS[name] ??
-        name.split('_').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
-}
+const TOOLS = [
+    {
+        id: 'claude_code',
+        label: 'Claude Code',
+        color: '#ff8866',
+        budget5h: 'claude_5h',
+        budgetWeekly: 'claude_weekly',
+        // Fallbacks match the daemon's lowest plan tier (only used when
+        // talking to an older daemon that doesn't resolve budgets).
+        fallback5h: 15.0,
+        fallbackWeekly: 75.0,
+    },
+    {
+        id: 'gemini_cli',
+        label: 'agy',
+        color: '#66b3ff',
+        budget5h: 'gemini_5h',
+        budgetWeekly: 'gemini_weekly',
+        fallback5h: 3.0,
+        fallbackWeekly: 8.0,
+    },
+];
 
 function formatTokens(n) {
     if (!Number.isFinite(n))
@@ -68,66 +87,63 @@ function formatCost(v) {
     return `$${(Number.isFinite(v) ? v : 0).toFixed(2)}`;
 }
 
+function severityClass(pct) {
+    if (pct >= 90)
+        return 'danger';
+    if (pct >= 70)
+        return 'warn';
+    return 'ok';
+}
+
 const ProgressBarRow = GObject.registerClass(
 class ProgressBarRow extends PopupMenu.PopupBaseMenuItem {
-    _init(title, cost, budget, resetText) {
+    _init(title, cost, budget, tokens) {
         super._init({reactive: false});
-        
-        let percentage = 0;
-        if (budget > 0) {
-            percentage = Math.min(100, Math.max(0, (cost / budget) * 100));
-        }
+
+        let pct = 0;
+        if (budget > 0)
+            pct = Math.min(100, Math.max(0, (cost / budget) * 100));
+        const sev = severityClass(pct);
 
         const vbox = new St.BoxLayout({
             vertical: true,
             x_expand: true,
             style_class: 'ai-progress-container',
-            style: 'margin-left: 12px; margin-right: 12px;'
         });
 
-        // Top row: Title and Percentage
+        // Title row: window name left, percentage right (severity-colored).
         const titleRow = new St.BoxLayout();
-        const titleLabel = new St.Label({
+        titleRow.add_child(new St.Label({
             text: title,
             style_class: 'ai-progress-title',
-            x_expand: true
-        });
-        const percentLabel = new St.Label({
-            text: budget > 0 ? `${Math.round(percentage)}% used` : `${formatCost(cost)}`,
-            style_class: 'ai-progress-percent'
-        });
-        titleRow.add_child(titleLabel);
-        titleRow.add_child(percentLabel);
-        
-        // Progress bar track
-        const track = new St.BoxLayout({
-            style_class: 'ai-progress-track',
-            y_expand: true,
-            x_expand: true
-        });
-        
-        // Progress bar fill (we use width as a percentage via custom drawing or fixed size)
-        // Since St widgets don't support fractional width simply via CSS percentage,
-        // we set a custom width based on parent allocation, or use a fixed width.
-        // For simplicity in extensions, we often use inline styles.
+            x_expand: true,
+        }));
+        titleRow.add_child(new St.Label({
+            text: budget > 0 ? `${Math.round(pct)}%` : formatCost(cost),
+            style_class: `ai-progress-percent ai-text-${sev}`,
+        }));
+
+        // Track + fill. Fill width is computed in px (St has no % widths).
+        const track = new St.BoxLayout({style_class: 'ai-progress-track'});
+        const fillWidth = pct > 0
+            ? Math.max(4, Math.round(TRACK_WIDTH * pct / 100))
+            : 0;
         const fill = new St.BoxLayout({
-            style_class: percentage >= 100 ? 'ai-progress-fill ai-progress-full' : 'ai-progress-fill'
+            style_class: `ai-progress-fill ai-fill-${sev}`,
         });
-        // We set inline style for the fill width. St.Widget inline_style is supported in modern GNOME.
-        fill.set_style(`width: ${percentage}%;`);
-        
+        fill.set_style(`width: ${fillWidth}px;`);
         track.add_child(fill);
-        
-        // Subtitle (Resets info)
-        const subtitleLabel = new St.Label({
-            text: resetText,
-            style_class: 'ai-progress-subtitle'
+
+        const subtitle = new St.Label({
+            text: budget > 0
+                ? `${formatCost(cost)} of ${formatCost(budget)}  ·  ${formatTokens(tokens)} tokens`
+                : `${formatTokens(tokens)} tokens`,
+            style_class: 'ai-progress-subtitle',
         });
 
         vbox.add_child(titleRow);
         vbox.add_child(track);
-        vbox.add_child(subtitleLabel);
-        
+        vbox.add_child(subtitle);
         this.add_child(vbox);
     }
 });
@@ -139,13 +155,17 @@ class Indicator extends PanelMenu.Button {
 
         const box = new St.BoxLayout({style_class: 'panel-status-menu-box'});
         box.add_child(new St.Icon({
-            icon_name: 'utilities-system-monitor-symbolic',
+            // Speedometer-style gauge (power-profiles); themed fallback for
+            // systems that don't ship it.
+            gicon: Gio.ThemedIcon.new_with_default_fallbacks(
+                'power-profile-performance-symbolic'),
+            fallback_icon_name: 'org.gnome.SystemMonitor-symbolic',
             style_class: 'system-status-icon',
         }));
         this._label = new St.Label({
-            text: '…',
+            text: '',
             y_align: Clutter.ActorAlign.CENTER,
-            style_class: 'ai-token-monitor-label',
+            style_class: 'ai-panel-label',
         });
         box.add_child(this._label);
         this.add_child(box);
@@ -160,6 +180,13 @@ class Indicator extends PanelMenu.Button {
 
         this._rebuildMenu();
         this._initProxy();
+
+        // Opening the menu always re-syncs: the daemon rescans its logs and
+        // returns a fresh snapshot, so the data is live without any button.
+        this.menu.connect('open-state-changed', (_menu, open) => {
+            if (open)
+                this._syncNow();
+        });
 
         this._timerId = GLib.timeout_add_seconds(
             GLib.PRIORITY_DEFAULT, REFRESH_INTERVAL_S, () => {
@@ -201,6 +228,26 @@ class Indicator extends PanelMenu.Button {
             }, this._cancellable);
     }
 
+    /** Force a daemon rescan and apply the resulting snapshot. */
+    _syncNow() {
+        if (!this._proxy) {
+            this._initProxy();
+            return;
+        }
+        this._proxy.RefreshRemote((result, error) => {
+            if (this._destroyed)
+                return;
+            if (error) {
+                if (!error.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.CANCELLED)) {
+                    console.warn(`[ai-token-monitor] Refresh failed: ${error.message}`);
+                    this._refresh();  // fall back to a passive read
+                }
+                return;
+            }
+            this._applySnapshot(result[0]);
+        }, this._cancellable);
+    }
+
     _refresh() {
         if (!this._proxy)
             return;
@@ -233,84 +280,120 @@ class Indicator extends PanelMenu.Button {
             return;
         }
         this._snapshot = snapshot;
-        // Minimalist top bar: just the icon, no text label
-        this._label.text = '';
+        this._updatePanel();
         this._rebuildMenu();
+    }
+
+    _toolData(period, toolName) {
+        const pData = this._snapshot?.[period];
+        const tData = pData?.tools?.find(t => t.tool === toolName);
+        return tData ?? {cost_usd: 0, total_tokens: 0};
+    }
+
+    _budget(key, fallback) {
+        const v = this._snapshot?.budgets?.[key];
+        return Number.isFinite(v) && v > 0 ? v : fallback;
+    }
+
+    /** Highest usage across all limit bars, for the at-a-glance panel label. */
+    _maxPressure() {
+        let max = null;
+        for (const tool of TOOLS) {
+            const pairs = [
+                ['five_hours', this._budget(tool.budget5h, tool.fallback5h)],
+                ['week', this._budget(tool.budgetWeekly, tool.fallbackWeekly)],
+            ];
+            for (const [period, budget] of pairs) {
+                if (!(budget > 0))
+                    continue;
+                const pct = this._toolData(period, tool.id).cost_usd / budget * 100;
+                if (max === null || pct > max)
+                    max = pct;
+            }
+        }
+        return max;
+    }
+
+    _updatePanel() {
+        const pressure = this._maxPressure();
+        if (pressure === null) {
+            this._label.text = '';
+            return;
+        }
+        const pct = Math.min(999, Math.round(pressure));
+        this._label.text = `${pct}%`;
+        this._label.style_class =
+            `ai-panel-label ai-text-${severityClass(pressure)}`;
     }
 
     _rebuildMenu() {
         this.menu.removeAll();
 
         if (!this._snapshot) {
-            this.menu.addMenuItem(new PopupMenu.PopupMenuItem(
-                'Daemon offline...', {reactive: false}));
-            this._addActions();
+            const offline = new PopupMenu.PopupMenuItem('Daemon offline',
+                {reactive: false});
+            this.menu.addMenuItem(offline);
+            const hint = new PopupMenu.PopupMenuItem(
+                'systemctl --user start ai-token-monitor', {reactive: false});
+            hint.label.add_style_class_name('ai-progress-subtitle');
+            this.menu.addMenuItem(hint);
             return;
         }
 
-        const getToolData = (period, toolName) => {
-            const pData = this._snapshot[period];
-            if (!pData || !pData.tools)
-                return { cost_usd: 0, total_tokens: 0 };
-            const tData = pData.tools.find(t => t.tool === toolName);
-            return tData || { cost_usd: 0, total_tokens: 0 };
-        };
-
-        const budgets = this._snapshot.budgets || {};
-        const tools = ['claude_code', 'gemini_cli'];
-
-        tools.forEach((tool, index) => {
-            if (index > 0) {
+        TOOLS.forEach((tool, index) => {
+            if (index > 0)
                 this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
-            }
 
-            const displayName = toolLabel(tool);
-            const header = new PopupMenu.PopupMenuItem(displayName.toUpperCase(), { reactive: false });
-            const color = tool === 'claude_code' ? '#ff8866' : '#66b3ff';
-            header.label.set_style(`font-weight: bold; color: ${color}; font-size: 13px;`);
+            const week = this._toolData('week', tool.id);
+            const fiveH = this._toolData('five_hours', tool.id);
+
+            // Header: colored dot + tool name, weekly spend on the right.
+            const header = new PopupMenu.PopupBaseMenuItem({reactive: false});
+            header.add_child(new St.Label({
+                text: '●',
+                style: `color: ${tool.color};`,
+                style_class: 'ai-tool-dot',
+                y_align: Clutter.ActorAlign.CENTER,
+            }));
+            header.add_child(new St.Label({
+                text: tool.label,
+                style_class: 'ai-tool-name',
+                x_expand: true,
+                y_align: Clutter.ActorAlign.CENTER,
+            }));
+            header.add_child(new St.Label({
+                text: `${formatCost(week.cost_usd)} / wk`,
+                style_class: 'ai-tool-cost',
+                y_align: Clutter.ActorAlign.CENTER,
+            }));
             this.menu.addMenuItem(header);
 
-            const last5h = getToolData('five_hours', tool);
-            const weekly = getToolData('week', tool);
-
-            // Budgets come resolved from the daemon (plan-aware). These fallbacks
-            // only apply if talking to an older daemon; they match the lowest tier.
-            let limit5h = tool === 'claude_code' ? (budgets.claude_5h ?? 15.0) : (budgets.gemini_5h ?? 3.0);
-            let limitWeekly = tool === 'claude_code' ? (budgets.claude_weekly ?? 75.0) : (budgets.gemini_weekly ?? 8.0);
-
-            // Five Hour Limit
             this.menu.addMenuItem(new ProgressBarRow(
-                'Five Hour Limit', 
-                last5h.cost_usd, 
-                limit5h,
-                `Used: ${formatCost(last5h.cost_usd)} of ${formatCost(limit5h)} (${formatTokens(last5h.total_tokens)} tokens)`
-            ));
-
-            // Weekly Limit
+                'Session (5h)', fiveH.cost_usd,
+                this._budget(tool.budget5h, tool.fallback5h),
+                fiveH.total_tokens));
             this.menu.addMenuItem(new ProgressBarRow(
-                'Weekly Limit', 
-                weekly.cost_usd, 
-                limitWeekly,
-                `Used: ${formatCost(weekly.cost_usd)} of ${formatCost(limitWeekly)} (${formatTokens(weekly.total_tokens)} tokens)`
-            ));
+                'Weekly', week.cost_usd,
+                this._budget(tool.budgetWeekly, tool.fallbackWeekly),
+                week.total_tokens));
         });
 
+        // Footer: calendar-period spend and last sync time.
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
-        this._addActions();
-    }
-
-    _addActions() {
-        const refresh = new PopupMenu.PopupMenuItem('Refresh Sync');
-        refresh.connect('activate', () => {
-            if (!this._proxy)
-                return;
-            this._proxy.RefreshRemote((result, error) => {
-                if (this._destroyed || error)
-                    return;
-                this._applySnapshot(result[0]);
-            }, this._cancellable);
-        });
-        this.menu.addMenuItem(refresh);
+        const today = this._snapshot.today?.totals?.cost_usd ?? 0;
+        const month = this._snapshot.month?.totals?.cost_usd ?? 0;
+        const footer = new PopupMenu.PopupBaseMenuItem({reactive: false});
+        footer.add_child(new St.Label({
+            text: `Today ${formatCost(today)}  ·  Month ${formatCost(month)}`,
+            style_class: 'ai-footer',
+            x_expand: true,
+        }));
+        const updated = new Date((this._snapshot.updated ?? 0) * 1000);
+        footer.add_child(new St.Label({
+            text: `Synced ${updated.getHours()}:${String(updated.getMinutes()).padStart(2, '0')}`,
+            style_class: 'ai-footer',
+        }));
+        this.menu.addMenuItem(footer);
     }
 
     destroy() {
