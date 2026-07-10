@@ -27,6 +27,24 @@ log = logging.getLogger(__name__)
 SESSION_SPAN = 5.0 * 3600.0
 WEEK_SPAN = 7.0 * 24.0 * 3600.0
 
+#: Tools that meter separate model families as independent quota pools.
+#: Antigravity's own "Models & Quota" screen shows GEMINI MODELS and
+#: CLAUDE AND GPT MODELS with their own 5h/weekly limits each; splitting on
+#: the normalized model name mirrors that structure.
+QUOTA_GROUPS = {
+    "gemini_cli": (
+        {"key": "gemini", "label": "Gemini",
+         "model_like": "gemini%"},
+        {"key": "claude_gpt", "label": "Claude & GPT",
+         "model_not_like": "gemini%"},
+    ),
+}
+
+#: Tools whose weekly reset can be re-anchored server-side (Google has reset
+#: Antigravity quotas globally several times); their countdown is marked
+#: approximate in the UI.
+APPROX_WEEKLY = frozenset({"gemini_cli"})
+
 
 class Daemon:
     def __init__(self, config: Config):
@@ -211,28 +229,59 @@ class Daemon:
         result["period"] = period
         return result
 
+    _EMPTY_ENTRY = {"input_tokens": 0, "output_tokens": 0,
+                    "cache_read_tokens": 0, "cache_write_tokens": 0,
+                    "total_tokens": 0, "cost_usd": 0.0, "requests": 0}
+
+    def _window_entry(self, tool: str, span: float,
+                      lookback_days: int | None, **family) -> dict:
+        """Anchored-window aggregate for one tool (optionally one of its
+        model-family quota pools)."""
+        anchor = self.store.session_anchor(tool, span, lookback_days, **family)
+        if anchor is None:
+            return {**self._EMPTY_ENTRY, "session_active": False}
+        result = self.store.summary(anchor, tool=tool, **family)
+        entry = dict(result["tools"][0]) if result["tools"] \
+            else dict(self._EMPTY_ENTRY)
+        entry.pop("tool", None)
+        entry["session_active"] = True
+        entry["session_started"] = anchor
+        entry["resets_at"] = anchor + span
+        return entry
+
     def _anchored_window(self, span: float, period: str,
                          lookback_days: int | None) -> dict:
         """One entry per tool, each measured from that tool's real window
         anchor (first use), with the exact reset time. Providers anchor both
         the 5h and the weekly window to first use, so this — unlike the
-        trailing GetSummary periods — matches when they actually reset."""
-        empty = {"input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0,
-                 "cache_write_tokens": 0, "total_tokens": 0,
-                 "cost_usd": 0.0, "requests": 0}
+        trailing GetSummary periods — matches when they actually reset.
+
+        Tools in QUOTA_GROUPS additionally get per-pool sub-entries (each
+        pool has its own anchor chain and reset), included once the user has
+        touched at least two pools."""
         tools = []
-        totals = dict(empty)
+        totals = dict(self._EMPTY_ENTRY)
         for tool in self.store.tools_seen():
-            anchor = self.store.session_anchor(tool, span, lookback_days)
-            if anchor is None:
-                entry = {"tool": tool, **empty, "session_active": False}
-            else:
-                result = self.store.summary(anchor, tool=tool)
-                entry = result["tools"][0] if result["tools"] else \
-                    {"tool": tool, **empty}
-                entry["session_active"] = True
-                entry["session_started"] = anchor
-                entry["resets_at"] = anchor + span
+            entry = {"tool": tool,
+                     **self._window_entry(tool, span, lookback_days)}
+            approx = period == "week" and tool in APPROX_WEEKLY
+            if approx:
+                entry["approx"] = True
+            groups = []
+            for spec in QUOTA_GROUPS.get(tool, ()):
+                family = {k: spec[k] for k in ("model_like", "model_not_like")
+                          if k in spec}
+                ever = self.store.summary(0.0, tool=tool, **family)
+                if ever["totals"]["requests"] == 0:
+                    continue  # pool never touched: don't render it
+                sub = self._window_entry(tool, span, lookback_days, **family)
+                sub["key"] = spec["key"]
+                sub["label"] = spec["label"]
+                if approx:
+                    sub["approx"] = True
+                groups.append(sub)
+            if len(groups) >= 2:
+                entry["groups"] = groups
             tools.append(entry)
             for key in totals:
                 totals[key] += entry[key]

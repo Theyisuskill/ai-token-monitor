@@ -111,14 +111,27 @@ class Store:
         self._db.commit()
         return cur.rowcount
 
-    def summary(self, since: float, tool: str | None = None) -> dict:
+    def summary(self, since: float, tool: str | None = None,
+                model_like: str | None = None,
+                model_not_like: str | None = None) -> dict:
         """Aggregate usage since an epoch, grouped by tool, plus totals.
 
-        With ``tool`` the aggregation is restricted to that tool — used for
-        the per-tool anchored session windows, whose "since" differs per tool.
+        ``tool`` restricts to one tool (per-tool anchored windows, whose
+        "since" differs per tool). ``model_like``/``model_not_like`` restrict
+        to a model family — Antigravity meters Gemini models and Claude/GPT
+        models as separate quota pools.
         """
-        where = "ts >= ?" + (" AND tool = ?" if tool else "")
-        params: tuple = (since, tool) if tool else (since,)
+        where = "ts >= ?"
+        params: list = [since]
+        if tool:
+            where += " AND tool = ?"
+            params.append(tool)
+        if model_like:
+            where += " AND model LIKE ?"
+            params.append(model_like)
+        if model_not_like:
+            where += " AND model NOT LIKE ?"
+            params.append(model_not_like)
         rows = self._db.execute(
             f"""SELECT tool,
                        COALESCE(SUM(input_tokens), 0),
@@ -177,7 +190,9 @@ class Store:
         return result
 
     def session_anchor(self, tool: str, span: float = 5.0 * 3600.0,
-                       lookback_days: int | None = 14) -> float | None:
+                       lookback_days: int | None = 14,
+                       model_like: str | None = None,
+                       model_not_like: str | None = None) -> float | None:
         """Start of the tool's current rate-limit window, or None if idle.
 
         Claude Code, Antigravity and Codex all anchor their windows (5h *and*
@@ -188,12 +203,21 @@ class Store:
 
         ``lookback_days=None`` replays the full history; required for the
         weekly window, whose anchor chain must start at the true first use.
+        ``model_like``/``model_not_like`` scope the chain to one of a tool's
+        independent quota pools (e.g. Antigravity's Gemini vs Claude/GPT).
         """
         since = 0.0 if lookback_days is None \
             else time.time() - lookback_days * 86400.0
+        where = "tool = ? AND ts >= ?"
+        params: list = [tool, since]
+        if model_like:
+            where += " AND model LIKE ?"
+            params.append(model_like)
+        if model_not_like:
+            where += " AND model NOT LIKE ?"
+            params.append(model_not_like)
         rows = self._db.execute(
-            "SELECT ts FROM usage WHERE tool = ? AND ts >= ? ORDER BY ts",
-            (tool, since),
+            f"SELECT ts FROM usage WHERE {where} ORDER BY ts", params,
         ).fetchall()
         anchor = None
         for (ts,) in rows:

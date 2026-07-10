@@ -154,7 +154,10 @@ function windowText(entry, budget, ratePerHour) {
             warn: false};
     }
     const remaining = entry.resets_at - Date.now() / 1000;
-    const resets = fmt(_('resets in %s'), spanStr(remaining));
+    // approx: the provider can re-anchor this window server-side (Google
+    // has globally reset Antigravity quotas), so the countdown is a guess.
+    const resets = fmt(_('resets in %s'),
+        (entry.approx ? '≈' : '') + spanStr(remaining));
     if (budget > 0 && entry.cost_usd >= budget)
         return {text: `${_('limit reached')} · ${resets}`, warn: true};
     if (budget > 0 && ratePerHour > 0.005) {
@@ -601,14 +604,39 @@ class Indicator extends PanelMenu.Button {
             // Both windows are anchored to first use, so each bar's tail
             // counts down to its real reset (burn-rate ETA only appears if
             // the limit would be hit before then, tinted amber).
-            const session = windowText(fiveH, budget5h, hourRate);
-            const weekly = windowText(week, budgetWk, dayRate);
-            this.menu.addMenuItem(new ProgressBarRow(
-                _('Session (5h)'), fiveH.cost_usd, budget5h, fiveH.total_tokens,
-                session.text, style.color, session.warn));
-            this.menu.addMenuItem(new ProgressBarRow(
-                _('Weekly'), week.cost_usd, budgetWk, week.total_tokens,
-                weekly.text, style.color, weekly.warn));
+            //
+            // Tools that meter independent model-family pools (Antigravity:
+            // Gemini vs Claude & GPT) get one bar pair per pool, mirroring
+            // the provider's own quota screen.
+            const fiveGroups = fiveH.groups ?? [];
+            const weekByKey = new Map((week.groups ?? []).map(g => [g.key, g]));
+            if (fiveGroups.length >= 2) {
+                for (const g5 of fiveGroups) {
+                    const gw = weekByKey.get(g5.key) ??
+                        {cost_usd: 0, total_tokens: 0};
+                    // No per-pool burn rate: rate 0 keeps projections off.
+                    const s = windowText(g5, budget5h, 0);
+                    const w = windowText(gw, budgetWk, 0);
+                    this.menu.addMenuItem(new ProgressBarRow(
+                        `${_('Session (5h)')} · ${g5.label}`,
+                        g5.cost_usd, budget5h, g5.total_tokens,
+                        s.text, style.color, s.warn));
+                    this.menu.addMenuItem(new ProgressBarRow(
+                        `${_('Weekly')} · ${g5.label}`,
+                        gw.cost_usd, budgetWk, gw.total_tokens,
+                        w.text, style.color, w.warn));
+                }
+            } else {
+                const session = windowText(fiveH, budget5h, hourRate);
+                const weekly = windowText(week, budgetWk, dayRate);
+                this.menu.addMenuItem(new ProgressBarRow(
+                    _('Session (5h)'), fiveH.cost_usd, budget5h,
+                    fiveH.total_tokens, session.text, style.color,
+                    session.warn));
+                this.menu.addMenuItem(new ProgressBarRow(
+                    _('Weekly'), week.cost_usd, budgetWk, week.total_tokens,
+                    weekly.text, style.color, weekly.warn));
+            }
 
             // Top models this week, tucked into a collapsible row.
             const models = week.models ?? [];

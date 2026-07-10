@@ -85,6 +85,24 @@ def test_session_anchor_follows_first_use(store):
     assert abs(anchor - (now - 90 * 60)) < 1
 
 
+def test_summary_and_anchor_model_family_filters(store):
+    now = time.time()
+    store.add([
+        rec(now - 60, tool="gemini_cli", model="gemini-3.1-pro-high",
+            cost=3.0, dedup="g1"),
+        rec(now - 6 * 3600, tool="gemini_cli",
+            model="claude-sonnet-4.6-thinking", cost=2.0, dedup="c1"),
+    ])
+    gem = store.summary(0, tool="gemini_cli", model_like="gemini%")
+    assert gem["totals"]["cost_usd"] == 3.0
+    other = store.summary(0, tool="gemini_cli", model_not_like="gemini%")
+    assert other["totals"]["cost_usd"] == 2.0
+    # Independent anchor chains per pool: gemini session active, claude idle.
+    assert store.session_anchor("gemini_cli", model_like="gemini%") is not None
+    assert store.session_anchor("gemini_cli",
+                                model_not_like="gemini%") is None
+
+
 def test_session_anchor_weekly_replays_full_history(store):
     now = time.time()
     # 20d ago opens a weekly window (expires 13d ago); 10d ago opens the
