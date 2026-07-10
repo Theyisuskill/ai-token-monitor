@@ -6,8 +6,76 @@ import argparse
 import json
 import logging
 import sys
+import time
 
 from . import __version__, config as config_mod
+
+#: Session length of the providers' short rate-limit window.
+SESSION_SPAN = 5.0 * 3600.0
+
+TOOL_LABELS = {"claude_code": "Claude Code", "gemini_cli": "agy",
+               "codex": "Codex"}
+
+
+def waybar_status(store, cfg) -> dict:
+    """Waybar custom-module payload: the most-pressured limit as text/class,
+    every tool's bars in the tooltip. Pure (no GLib) — usable one-shot.
+
+    Matches the GNOME panel indicator: percentage = max pressure across all
+    5h (anchored) and weekly (trailing 7d) bars; class flips at 70/90%.
+    """
+    from .store import period_start
+
+    peaks = None
+    if cfg.budget_mode == "auto":
+        peaks = {
+            tool: {"5h": store.peak_window(tool, 5.0 * 3600.0),
+                   "weekly": store.peak_window(tool, 7.0 * 24.0 * 3600.0)}
+            for tool in config_mod.PLAN_PRESETS
+        }
+    budgets = config_mod.resolve_budgets(cfg.plans, cfg.budget_mode,
+                                         cfg.budgets, peaks)
+    prefixes = {tool: spec["prefix"]
+                for tool, spec in config_mod.PLAN_PRESETS.items()}
+
+    week_since = period_start("week")
+    max_pct = 0.0
+    lines = []
+    for tool in store.tools_seen():
+        prefix = prefixes.get(tool, tool)
+        budget_5h = budgets.get(f"{prefix}_5h", 0.0)
+        budget_wk = budgets.get(f"{prefix}_weekly", 0.0)
+        anchor = store.session_anchor(tool, SESSION_SPAN)
+        cost_5h = (store.summary(anchor, tool=tool)["totals"]["cost_usd"]
+                   if anchor else 0.0)
+        cost_wk = store.summary(week_since, tool=tool)["totals"]["cost_usd"]
+
+        parts = []
+        if budget_5h > 0:
+            pct = cost_5h / budget_5h * 100
+            max_pct = max(max_pct, pct)
+            parts.append(f"5h {round(pct)}% (${cost_5h:.2f}/${budget_5h:.0f})")
+        else:
+            parts.append(f"5h ${cost_5h:.2f}")
+        if budget_wk > 0:
+            pct = cost_wk / budget_wk * 100
+            max_pct = max(max_pct, pct)
+            parts.append(f"wk {round(pct)}% (${cost_wk:.2f}/${budget_wk:.0f})")
+        else:
+            parts.append(f"wk ${cost_wk:.2f}")
+        if anchor:
+            parts.append("resets " + time.strftime(
+                "%H:%M", time.localtime(anchor + SESSION_SPAN)))
+        lines.append(f"{TOOL_LABELS.get(tool, tool)} · " + " · ".join(parts))
+
+    level = ("danger" if max_pct >= 90 else
+             "warn" if max_pct >= 70 else "ok")
+    return {
+        "text": f"{round(max_pct)}%",
+        "percentage": round(max_pct),
+        "class": level,
+        "tooltip": "\n".join(lines) or "no usage recorded",
+    }
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -31,6 +99,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--daily", metavar="PERIOD", dest="daily",
                         choices=("week", "month", "all"),
                         help="print a per-day JSON series and exit")
+    parser.add_argument("--waybar", action="store_true",
+                        help="print a Waybar custom-module JSON object and exit")
     args = parser.parse_args(argv)
 
     cfg = config_mod.load(args.config)
@@ -40,12 +110,14 @@ def main(argv: list[str] | None = None) -> int:
         format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
     )
 
-    if args.summary or args.daily:
+    if args.summary or args.daily or args.waybar:
         from .store import Store, period_start
 
         store = Store(cfg.database)
         try:
-            if args.summary:
+            if args.waybar:
+                result = waybar_status(store, cfg)
+            elif args.summary:
                 result = store.summary(period_start(args.summary))
                 result["period"] = args.summary
             else:
@@ -53,7 +125,10 @@ def main(argv: list[str] | None = None) -> int:
                           "days": store.daily_series(period_start(args.daily))}
         finally:
             store.close()
-        json.dump(result, sys.stdout, indent=2)
+        if args.waybar:
+            json.dump(result, sys.stdout)  # Waybar wants one compact line
+        else:
+            json.dump(result, sys.stdout, indent=2)
         print()
         return 0
 

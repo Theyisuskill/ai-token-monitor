@@ -126,6 +126,21 @@ Around the bars the popup also shows:
 - **By model** — a collapsible top-3 cost breakdown per tool for the week.
 - A 7-day spend sparkline above the footer.
 
+### Waybar (Sway/Hyprland — no GNOME needed)
+
+The daemon is frontend-agnostic; a `custom` Waybar module gets the same
+at-a-glance signal as the GNOME indicator (most-pressured limit, per-tool
+tooltip, `ok`/`warn`/`danger` class at 70/90%):
+
+```json
+"custom/ai-tokens": {
+    "exec": "ai-token-monitor --waybar",
+    "return-type": "json",
+    "interval": 60,
+    "format": "󱚝 {}"
+}
+```
+
 ### Reparsing history
 
 Dedup keys are stable across re-reads, so parser or pricing fixes don't
