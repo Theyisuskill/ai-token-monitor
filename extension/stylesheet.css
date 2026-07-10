@@ -91,6 +91,37 @@
     color: rgba(160, 160, 170, 0.75);
 }
 
+/* -- per-model breakdown ------------------------------------------------- */
+
+.ai-model-name {
+    font-size: 11px;
+    color: rgba(200, 200, 210, 0.85);
+}
+
+.ai-model-cost {
+    font-size: 11px;
+    font-weight: 600;
+    color: rgba(160, 160, 170, 0.9);
+}
+
+/* -- 7-day sparkline ------------------------------------------------------ */
+
+.ai-spark-row {
+    padding: 2px 4px 0 4px;
+}
+
+.ai-spark-col {
+    height: 24px;
+}
+
+.ai-spark-bar {
+    border-radius: 2px;
+    margin: 0 2px;
+    background-gradient-direction: vertical;
+    background-gradient-start: #62d09a;
+    background-gradient-end: #4c9be8;
+}
+
 /* -- footer ------------------------------------------------------------- */
 
 .ai-footer {

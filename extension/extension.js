@@ -92,9 +92,25 @@ function severityClass(pct) {
     return 'ok';
 }
 
+/** "at this pace" time-to-limit, from a burn rate in $/hour. */
+function etaText(cost, budget, ratePerHour) {
+    if (!(budget > 0))
+        return '';
+    if (cost >= budget)
+        return 'limit reached';
+    if (!(ratePerHour > 0.005))
+        return '';  // idle or negligible burn: no meaningful projection
+    const hours = (budget - cost) / ratePerHour;
+    if (hours < 1)
+        return `≈${Math.max(1, Math.round(hours * 60))}m left`;
+    if (hours < 48)
+        return `≈${Math.round(hours)}h left`;
+    return `≈${Math.round(hours / 24)}d left`;
+}
+
 const ProgressBarRow = GObject.registerClass(
 class ProgressBarRow extends PopupMenu.PopupBaseMenuItem {
-    _init(title, cost, budget, tokens) {
+    _init(title, cost, budget, tokens, extra = '') {
         super._init({reactive: false});
 
         let pct = 0;
@@ -131,10 +147,13 @@ class ProgressBarRow extends PopupMenu.PopupBaseMenuItem {
         fill.set_style(`width: ${fillWidth}px;`);
         track.add_child(fill);
 
+        let detail = budget > 0
+            ? `${formatCost(cost)} of ${formatCost(budget)}  ·  ${formatTokens(tokens)} tokens`
+            : `${formatTokens(tokens)} tokens`;
+        if (extra)
+            detail += `  ·  ${extra}`;
         const subtitle = new St.Label({
-            text: budget > 0
-                ? `${formatCost(cost)} of ${formatCost(budget)}  ·  ${formatTokens(tokens)} tokens`
-                : `${formatTokens(tokens)} tokens`,
+            text: detail,
             style_class: 'ai-progress-subtitle',
         });
 
@@ -174,6 +193,9 @@ class Indicator extends PanelMenu.Button {
         this._destroyed = false;
         this._proxyPending = false;
         this._cancellable = new Gio.Cancellable();
+        // Last alert bucket per "tool:period" (0 <70%, 1 ≥70, 2 ≥90, 3 ≥100);
+        // notifying only on upward transitions gives natural hysteresis.
+        this._alertState = new Map();
 
         this._rebuildMenu();
         this._initProxy();
@@ -278,7 +300,34 @@ class Indicator extends PanelMenu.Button {
         }
         this._snapshot = snapshot;
         this._updatePanel();
+        this._checkAlerts();
         this._rebuildMenu();
+    }
+
+    /** Desktop notification when a limit bar crosses 70/90/100%. */
+    _checkAlerts() {
+        for (const id of this._activeTools()) {
+            const style = toolStyle(id);
+            for (const [period, label, budgetKey] of [
+                ['five_hours', 'Session (5h)', `${style.prefix}_5h`],
+                ['week', 'Weekly', `${style.prefix}_weekly`],
+            ]) {
+                const budget = this._budget(budgetKey);
+                if (!(budget > 0))
+                    continue;
+                const cost = this._toolData(period, id).cost_usd;
+                const pct = cost / budget * 100;
+                const bucket = pct >= 100 ? 3 : pct >= 90 ? 2 : pct >= 70 ? 1 : 0;
+                const key = `${id}:${period}`;
+                const prev = this._alertState.get(key) ?? 0;
+                if (bucket > prev) {
+                    Main.notify(
+                        `${style.label} — ${label} at ${Math.round(pct)}%`,
+                        `${formatCost(cost)} of ${formatCost(budget)} used`);
+                }
+                this._alertState.set(key, bucket);
+            }
+        }
     }
 
     _toolData(period, toolName) {
@@ -397,18 +446,42 @@ class Indicator extends PanelMenu.Button {
             }));
             this.menu.addMenuItem(header);
 
+            // Burn rates from the short rolling windows (absent on old daemons).
+            const hourRate = this._toolData('hour', id).cost_usd;
+            const dayRate = this._toolData('day', id).cost_usd / 24;
+
+            const budget5h = this._budget(`${style.prefix}_5h`);
+            const budgetWk = this._budget(`${style.prefix}_weekly`);
             this.menu.addMenuItem(new ProgressBarRow(
-                'Session (5h)', fiveH.cost_usd,
-                this._budget(`${style.prefix}_5h`),
-                fiveH.total_tokens));
+                'Session (5h)', fiveH.cost_usd, budget5h, fiveH.total_tokens,
+                etaText(fiveH.cost_usd, budget5h, hourRate)));
             this.menu.addMenuItem(new ProgressBarRow(
-                'Weekly', week.cost_usd,
-                this._budget(`${style.prefix}_weekly`),
-                week.total_tokens));
+                'Weekly', week.cost_usd, budgetWk, week.total_tokens,
+                etaText(week.cost_usd, budgetWk, dayRate)));
+
+            // Top models this week, tucked into a collapsible row.
+            const models = week.models ?? [];
+            if (models.length) {
+                const sub = new PopupMenu.PopupSubMenuMenuItem('By model');
+                for (const m of models) {
+                    const row = new PopupMenu.PopupBaseMenuItem({reactive: false});
+                    row.add_child(new St.Label({
+                        text: m.model,
+                        style_class: 'ai-model-name',
+                        x_expand: true,
+                    }));
+                    row.add_child(new St.Label({
+                        text: `${formatCost(m.cost_usd)}  ·  ${formatTokens(m.total_tokens)}`,
+                        style_class: 'ai-model-cost',
+                    }));
+                    sub.menu.addMenuItem(row);
+                }
+                this.menu.addMenuItem(sub);
+            }
         });
 
-        // Footer: calendar-period spend and last sync time.
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+        this._addSparkline();
         const today = this._snapshot.today?.totals?.cost_usd ?? 0;
         const month = this._snapshot.month?.totals?.cost_usd ?? 0;
         const footer = new PopupMenu.PopupBaseMenuItem({reactive: false});
@@ -423,6 +496,37 @@ class Indicator extends PanelMenu.Button {
             style_class: 'ai-footer',
         }));
         this.menu.addMenuItem(footer);
+    }
+
+    /** Mini bar chart of the last 7 days' spend (all tools combined). */
+    _addSparkline() {
+        const daily = (this._snapshot.daily ?? []).slice(-7);
+        if (daily.length < 2)
+            return;
+        const max = Math.max(...daily.map(d => d.cost_usd), 0.01);
+
+        const item = new PopupMenu.PopupBaseMenuItem({reactive: false});
+        const row = new St.BoxLayout({
+            style_class: 'ai-spark-row',
+            x_expand: true,
+        });
+        for (const d of daily) {
+            const col = new St.BoxLayout({
+                vertical: true,
+                style_class: 'ai-spark-col',
+                x_expand: true,
+            });
+            col.add_child(new St.Widget({y_expand: true}));  // bottom-align
+            const h = Math.max(2, Math.round(22 * d.cost_usd / max));
+            col.add_child(new St.Widget({
+                style_class: 'ai-spark-bar',
+                style: `height: ${h}px;`,
+                x_expand: true,
+            }));
+            row.add_child(col);
+        }
+        item.add_child(row);
+        this.menu.addMenuItem(item);
     }
 
     destroy() {
