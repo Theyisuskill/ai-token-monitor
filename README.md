@@ -8,6 +8,11 @@ shows consolidated tokens + estimated cost in the top bar.
 Target platform: **Fedora (GNOME Shell 45–50)**. Anything with systemd,
 D-Bus and GNOME should work.
 
+<img src="docs/screenshot.png" alt="AI Token Monitor popup: per-tool session and weekly limit bars with reset countdowns, per-model breakdown and 7-day spend sparkline" width="380">
+
+*Both bars are anchored to each provider's real rate-limit window and count
+down to the actual reset; sections appear only for the tools you use.*
+
 ```
 ┌────────────────────────────────────────────────────────────────────┐
 │ GNOME Shell top bar         ⬚ 12.4M · $3.12                        │
