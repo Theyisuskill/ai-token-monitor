@@ -23,7 +23,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--backfill", action="store_true",
                         help="scan all logs once, update the database, exit")
     parser.add_argument("--summary", metavar="PERIOD",
-                        choices=("today", "week", "month", "all"),
+                        choices=("1h", "5h", "24h", "today", "week", "month", "all"),
                         help="print a JSON summary from the database and exit")
     parser.add_argument("--daily", metavar="PERIOD", dest="daily",
                         choices=("week", "month", "all"),

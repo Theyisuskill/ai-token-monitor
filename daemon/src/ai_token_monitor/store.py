@@ -60,8 +60,12 @@ def period_start(period: str) -> float:
     is off by the DST delta. mktime() re-resolves the correct offset for
     whatever date it's given.
     """
+    if period == "1h":  # rolling; feeds the burn-rate estimate for the 5h bar
+        return time.time() - 3600.0
     if period == "5h":
         return time.time() - 5.0 * 3600.0
+    if period == "24h":  # rolling; feeds the burn-rate estimate for the weekly bar
+        return time.time() - 24.0 * 3600.0
     if period == "week":  # rolling 7 days (Claude/Antigravity reset, not Monday)
         return time.time() - 7.0 * 24.0 * 3600.0
     today = date.today()
@@ -144,6 +148,27 @@ class Store:
             totals["cost_usd"] += cost
         totals["cost_usd"] = round(totals["cost_usd"], 4)
         return {"since": since, "tools": tools, "totals": totals}
+
+    def models_summary(self, since: float,
+                       limit_per_tool: int = 3) -> dict[str, list[dict]]:
+        """Top models per tool by cost since an epoch — for the popup's
+        per-tool "By model" breakdown."""
+        rows = self._db.execute(
+            """SELECT tool, model,
+                      COALESCE(SUM(cost_usd), 0),
+                      COALESCE(SUM(input_tokens + output_tokens +
+                                   cache_read_tokens + cache_write_tokens), 0)
+               FROM usage WHERE ts >= ?
+               GROUP BY tool, model ORDER BY tool, SUM(cost_usd) DESC""",
+            (since,),
+        ).fetchall()
+        result: dict[str, list[dict]] = {}
+        for tool, model, cost, tokens in rows:
+            entries = result.setdefault(tool, [])
+            if len(entries) < limit_per_tool:
+                entries.append({"model": model, "cost_usd": round(cost, 4),
+                                "total_tokens": tokens})
+        return result
 
     def tools_seen(self) -> list[str]:
         """Every tool with at least one usage record, alphabetically.

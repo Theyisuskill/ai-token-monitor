@@ -178,11 +178,21 @@ class Daemon:
         return result
 
     def snapshot(self) -> dict:
+        week = self.summary("week")
+        # Per-tool model breakdown rides on the week entries (the window the
+        # popup's "By model" submenu shows).
+        models = self.store.models_summary(period_start("week"))
+        for entry in week["tools"]:
+            entry["models"] = models.get(entry["tool"], [])
         return {
             "five_hours": self.summary("5h"),
+            # Short rolling windows so the UI can estimate burn rate.
+            "hour": self.summary("1h"),
+            "day": self.summary("24h"),
             "today": self.summary("today"),
-            "week": self.summary("week"),
+            "week": week,
             "month": self.summary("month"),
+            "daily": self.store.daily_series(time.time() - 7 * 86400.0),
             "budgets": self._resolved_budgets(),
             "tools": self.store.tools_seen(),
             "updated": time.time(),

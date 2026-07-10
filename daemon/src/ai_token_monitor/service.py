@@ -26,7 +26,7 @@ BUS_NAME = "io.github.theyisuskill.AITokenMonitor"
 OBJECT_PATH = "/io/github/theyisuskill/AITokenMonitor"
 IFACE_NAME = "io.github.theyisuskill.AITokenMonitor1"
 
-VALID_PERIODS = ("5h", "today", "week", "month", "all")
+VALID_PERIODS = ("1h", "5h", "24h", "today", "week", "month", "all")
 
 
 @dbus_interface(IFACE_NAME)
