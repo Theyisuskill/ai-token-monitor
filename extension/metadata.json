@@ -1,8 +1,8 @@
 {
     "uuid": "ai-token-monitor@theyisuskill.github.io",
     "name": "AI Token Monitor",
-    "description": "Shows unified token usage and estimated cost of local AI CLI tools (Claude Code, Gemini CLI, ...) in the top bar. Requires the ai-token-monitor daemon.",
+    "description": "Unified usage monitor for local AI coding tools (Claude Code, Antigravity, Codex, Gemini CLI). Rolling 5-hour and weekly limit bars scaled to your subscription plan, burn-rate projections, threshold notifications, per-model cost breakdown and a 7-day spend sparkline. Requires the ai-token-monitor daemon.",
     "shell-version": ["45", "46", "47", "48", "49", "50"],
     "url": "https://github.com/theyisuskill/ai-token-monitor",
-    "version-name": "0.1.0"
+    "version-name": "0.2.0"
 }

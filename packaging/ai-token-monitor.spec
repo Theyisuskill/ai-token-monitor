@@ -2,7 +2,7 @@
 %global dbus_name io.github.theyisuskill.AITokenMonitor
 
 Name:           ai-token-monitor
-Version:        0.1.0
+Version:        0.2.0
 Release:        1%{?dist}
 Summary:        Unified token-usage monitor for local AI CLI tools
 License:        GPL-3.0-or-later
@@ -81,5 +81,14 @@ install -pm0644 extension/extension.js extension/metadata.json \
 %{_datadir}/gnome-shell/extensions/%{ext_uuid}/
 
 %changelog
+* Thu Jul 09 2026 theyisuskill <theyisuskill@gmail.com> - 0.2.0-1
+- Rolling 5h/weekly windows matching provider limits; plan-aware budgets
+  (preset per tier or auto-calibrated) with a Preferences window
+- Antigravity: real model extraction from gen_metadata (accurate pricing);
+  new --reparse migration; OpenAI Codex CLI adapter; dynamic tool sections
+- Limit notifications, burn-rate projections, per-model breakdown,
+  brand-colored bars and a stacked 7-day sparkline
+- Test suite + CI
+
 * Wed Jul 08 2026 theyisuskill <theyisuskill@gmail.com> - 0.1.0-1
 - Initial package
