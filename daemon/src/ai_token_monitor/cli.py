@@ -10,8 +10,9 @@ import time
 
 from . import __version__, config as config_mod
 
-#: Session length of the providers' short rate-limit window.
+#: The providers' rate-limit windows, both anchored to first use.
 SESSION_SPAN = 5.0 * 3600.0
+WEEK_SPAN = 7.0 * 24.0 * 3600.0
 
 TOOL_LABELS = {"claude_code": "Claude Code", "gemini_cli": "agy",
                "codex": "Codex"}
@@ -22,10 +23,9 @@ def waybar_status(store, cfg) -> dict:
     every tool's bars in the tooltip. Pure (no GLib) — usable one-shot.
 
     Matches the GNOME panel indicator: percentage = max pressure across all
-    5h (anchored) and weekly (trailing 7d) bars; class flips at 70/90%.
+    5h and weekly bars (both anchored to first use, like the providers');
+    class flips at 70/90%.
     """
-    from .store import period_start
-
     peaks = None
     if cfg.budget_mode == "auto":
         peaks = {
@@ -38,34 +38,41 @@ def waybar_status(store, cfg) -> dict:
     prefixes = {tool: spec["prefix"]
                 for tool, spec in config_mod.PLAN_PRESETS.items()}
 
-    week_since = period_start("week")
+    def span_str(seconds: float) -> str:
+        minutes = max(1, int(seconds // 60))
+        if minutes < 60:
+            return f"{minutes}m"
+        hours, minutes = divmod(minutes, 60)
+        if hours < 48:
+            return f"{hours}h {minutes:02d}m" if minutes else f"{hours}h"
+        days, hours = divmod(hours, 24)
+        return f"{days}d {hours}h" if hours else f"{days}d"
+
+    now = time.time()
     max_pct = 0.0
     lines = []
     for tool in store.tools_seen():
         prefix = prefixes.get(tool, tool)
-        budget_5h = budgets.get(f"{prefix}_5h", 0.0)
-        budget_wk = budgets.get(f"{prefix}_weekly", 0.0)
-        anchor = store.session_anchor(tool, SESSION_SPAN)
-        cost_5h = (store.summary(anchor, tool=tool)["totals"]["cost_usd"]
-                   if anchor else 0.0)
-        cost_wk = store.summary(week_since, tool=tool)["totals"]["cost_usd"]
-
         parts = []
-        if budget_5h > 0:
-            pct = cost_5h / budget_5h * 100
-            max_pct = max(max_pct, pct)
-            parts.append(f"5h {round(pct)}% (${cost_5h:.2f}/${budget_5h:.0f})")
-        else:
-            parts.append(f"5h ${cost_5h:.2f}")
-        if budget_wk > 0:
-            pct = cost_wk / budget_wk * 100
-            max_pct = max(max_pct, pct)
-            parts.append(f"wk {round(pct)}% (${cost_wk:.2f}/${budget_wk:.0f})")
-        else:
-            parts.append(f"wk ${cost_wk:.2f}")
-        if anchor:
-            parts.append("resets " + time.strftime(
-                "%H:%M", time.localtime(anchor + SESSION_SPAN)))
+        for label, span, lookback, budget in (
+                ("5h", SESSION_SPAN, 14,
+                 budgets.get(f"{prefix}_5h", 0.0)),
+                ("wk", WEEK_SPAN, None,
+                 budgets.get(f"{prefix}_weekly", 0.0))):
+            anchor = store.session_anchor(tool, span, lookback)
+            cost = (store.summary(anchor, tool=tool)["totals"]["cost_usd"]
+                    if anchor else 0.0)
+            if budget > 0:
+                pct = cost / budget * 100
+                max_pct = max(max_pct, pct)
+                part = f"{label} {round(pct)}% (${cost:.2f}/${budget:.0f}"
+            else:
+                part = f"{label} ${cost:.2f}"
+            if anchor:
+                part += f", resets in {span_str(anchor + span - now)}"
+            if budget > 0:
+                part += ")"
+            parts.append(part)
         lines.append(f"{TOOL_LABELS.get(tool, tool)} · " + " · ".join(parts))
 
     level = ("danger" if max_pct >= 90 else

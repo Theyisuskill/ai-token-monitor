@@ -43,7 +43,7 @@ def test_pressure_class_and_tooltip(store):
     assert out["class"] == "danger"
     assert out["percentage"] >= 90
     assert "Claude Code" in out["tooltip"]
-    assert "resets" in out["tooltip"]  # session is active
+    assert "resets in" in out["tooltip"]  # both windows are active
 
 
 def test_idle_session_counts_zero_for_5h(store):
@@ -52,8 +52,11 @@ def test_idle_session_counts_zero_for_5h(store):
     out = waybar_status(store, cfg())
     # 5h pressure gone; weekly ($14 of $75 = 19%) is what remains
     assert out["class"] == "ok"
-    assert "5h 0%" in out["tooltip"]
-    assert "resets" not in out["tooltip"]
+    assert "5h $0.00" in out["tooltip"] or "5h 0%" in out["tooltip"]
+    # the 5h part carries no reset (idle), the weekly window does
+    part_5h = out["tooltip"].split("wk")[0]
+    assert "resets in" not in part_5h
+    assert "resets in" in out["tooltip"]
 
 
 def test_multiple_tools_one_line_each(store):

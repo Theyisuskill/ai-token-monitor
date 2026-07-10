@@ -126,17 +126,39 @@ function etaText(cost, budget, ratePerHour) {
     return fmt(_('≈%s left'), span);
 }
 
-/** Subtitle tail for the anchored 5h session bar. */
-function sessionText(entry, budget) {
+/** Human time span: "45m", "3h 20m", "5d 22h". */
+function spanStr(seconds) {
+    const minutes = Math.max(1, Math.floor(seconds / 60));
+    if (minutes < 60)
+        return `${minutes}m`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 48) {
+        const m = minutes % 60;
+        return m ? `${hours}h ${String(m).padStart(2, '0')}m` : `${hours}h`;
+    }
+    const days = Math.floor(hours / 24);
+    const h = hours % 24;
+    return h ? `${days}d ${h}h` : `${days}d`;
+}
+
+/** Subtitle tail for an anchored window bar (5h session or weekly): the
+ * time left until the provider resets it, plus a burn-rate warning ONLY
+ * when the limit would be hit before that reset — a projection that lands
+ * after the reset is meaningless, the window empties first. */
+function windowText(entry, budget, ratePerHour) {
     if (entry.session_active === false)
         return _('no active session');
     if (!entry.resets_at)
-        return null;  // old daemon without anchoring
-    const at = new Date(entry.resets_at * 1000);
-    const resets = fmt(_('resets %s'),
-        `${at.getHours()}:${String(at.getMinutes()).padStart(2, '0')}`);
+        return etaText(entry.cost_usd, budget, ratePerHour);  // old daemon
+    const remaining = entry.resets_at - Date.now() / 1000;
+    const resets = fmt(_('resets in %s'), spanStr(remaining));
     if (budget > 0 && entry.cost_usd >= budget)
         return `${_('limit reached')} · ${resets}`;
+    if (budget > 0 && ratePerHour > 0.005) {
+        const etaSecs = (budget - entry.cost_usd) / ratePerHour * 3600;
+        if (etaSecs < remaining)
+            return `${fmt(_('≈%s to limit'), spanStr(etaSecs))} · ${resets}`;
+    }
     return resets;
 }
 
@@ -511,17 +533,15 @@ class Indicator extends PanelMenu.Button {
 
             const budget5h = this._budget(`${style.prefix}_5h`);
             const budgetWk = this._budget(`${style.prefix}_weekly`);
-            // The 5h window is anchored to the session start, so its tail
-            // shows the exact reset time (falls back to burn-rate ETA when
-            // talking to an older daemon).
+            // Both windows are anchored to first use, so each bar's tail
+            // counts down to its real reset (burn-rate ETA only appears if
+            // the limit would be hit before then).
             this.menu.addMenuItem(new ProgressBarRow(
                 _('Session (5h)'), fiveH.cost_usd, budget5h, fiveH.total_tokens,
-                sessionText(fiveH, budget5h) ??
-                    etaText(fiveH.cost_usd, budget5h, hourRate),
-                style.color));
+                windowText(fiveH, budget5h, hourRate), style.color));
             this.menu.addMenuItem(new ProgressBarRow(
                 _('Weekly'), week.cost_usd, budgetWk, week.total_tokens,
-                etaText(week.cost_usd, budgetWk, dayRate), style.color));
+                windowText(week, budgetWk, dayRate), style.color));
 
             // Top models this week, tucked into a collapsible row.
             const models = week.models ?? [];

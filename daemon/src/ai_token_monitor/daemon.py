@@ -23,8 +23,9 @@ from .watcher import LogWatcher
 
 log = logging.getLogger(__name__)
 
-#: How long a provider's short rate-limit session lasts once opened.
+#: The providers' rate-limit windows, both anchored to first use.
 SESSION_SPAN = 5.0 * 3600.0
+WEEK_SPAN = 7.0 * 24.0 * 3600.0
 
 
 class Daemon:
@@ -210,18 +211,19 @@ class Daemon:
         result["period"] = period
         return result
 
-    def _anchored_sessions(self) -> dict:
-        """The snapshot's five_hours block: one entry per tool, each measured
-        from that tool's real session anchor (first use), with the exact
-        reset time. Providers anchor the 5h window to first use, so this —
-        unlike the trailing GetSummary("5h") — matches when they reset."""
+    def _anchored_window(self, span: float, period: str,
+                         lookback_days: int | None) -> dict:
+        """One entry per tool, each measured from that tool's real window
+        anchor (first use), with the exact reset time. Providers anchor both
+        the 5h and the weekly window to first use, so this — unlike the
+        trailing GetSummary periods — matches when they actually reset."""
         empty = {"input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0,
                  "cache_write_tokens": 0, "total_tokens": 0,
                  "cost_usd": 0.0, "requests": 0}
         tools = []
         totals = dict(empty)
         for tool in self.store.tools_seen():
-            anchor = self.store.session_anchor(tool, SESSION_SPAN)
+            anchor = self.store.session_anchor(tool, span, lookback_days)
             if anchor is None:
                 entry = {"tool": tool, **empty, "session_active": False}
             else:
@@ -230,23 +232,25 @@ class Daemon:
                     {"tool": tool, **empty}
                 entry["session_active"] = True
                 entry["session_started"] = anchor
-                entry["resets_at"] = anchor + SESSION_SPAN
+                entry["resets_at"] = anchor + span
             tools.append(entry)
             for key in totals:
                 totals[key] += entry[key]
         totals["cost_usd"] = round(totals["cost_usd"], 4)
         return {"tools": tools, "totals": totals,
-                "period": "5h", "anchored": True}
+                "period": period, "anchored": True}
 
     def snapshot(self) -> dict:
-        week = self.summary("week")
+        # The weekly anchor chain must replay from the true first use, so no
+        # lookback cap; the 5h chain only needs recent history.
+        week = self._anchored_window(WEEK_SPAN, "week", None)
         # Per-tool model breakdown rides on the week entries (the window the
         # popup's "By model" submenu shows).
         models = self.store.models_summary(period_start("week"))
         for entry in week["tools"]:
             entry["models"] = models.get(entry["tool"], [])
         return {
-            "five_hours": self._anchored_sessions(),
+            "five_hours": self._anchored_window(SESSION_SPAN, "5h", 14),
             # Short rolling windows so the UI can estimate burn rate.
             "hour": self.summary("1h"),
             "day": self.summary("24h"),

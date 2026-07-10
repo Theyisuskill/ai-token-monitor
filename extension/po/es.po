@@ -59,8 +59,11 @@ msgstr "≈%s restante"
 msgid "no active session"
 msgstr "sin sesión activa"
 
-msgid "resets %s"
-msgstr "resetea %s"
+msgid "resets in %s"
+msgstr "resetea en %s"
+
+msgid "≈%s to limit"
+msgstr "≈%s para el límite"
 
 #. Desktop notification: "<tool> — <window> at N%"
 msgid "%s — %s at %s%%"

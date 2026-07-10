@@ -85,6 +85,21 @@ def test_session_anchor_follows_first_use(store):
     assert abs(anchor - (now - 90 * 60)) < 1
 
 
+def test_session_anchor_weekly_replays_full_history(store):
+    now = time.time()
+    # 20d ago opens a weekly window (expires 13d ago); 10d ago opens the
+    # next (expires 3d ago); yesterday opens the CURRENT one.
+    store.add([
+        rec(now - 20 * 86400, dedup="w1"),
+        rec(now - 10 * 86400, dedup="w2"),
+        rec(now - 1 * 86400, dedup="w3"),
+    ])
+    week = 7 * 86400.0
+    anchor = store.session_anchor("claude_code", week, lookback_days=None)
+    assert anchor is not None
+    assert abs(anchor - (now - 86400)) < 1
+
+
 def test_session_anchor_none_when_idle(store):
     now = time.time()
     store.add([rec(now - 9 * 3600, dedup="old")])  # expired 4h ago

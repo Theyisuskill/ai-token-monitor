@@ -177,18 +177,23 @@ class Store:
         return result
 
     def session_anchor(self, tool: str, span: float = 5.0 * 3600.0,
-                       lookback_days: int = 14) -> float | None:
-        """Start of the tool's current rate-limit session, or None if idle.
+                       lookback_days: int | None = 14) -> float | None:
+        """Start of the tool's current rate-limit window, or None if idle.
 
-        Claude Code, Antigravity and Codex all anchor their short window to
-        the FIRST request, not to a trailing clock: a session opens on first
-        use, lasts ``span`` seconds, and the next request after it expires
-        opens a new one. Replaying that rule over recent history yields the
+        Claude Code, Antigravity and Codex all anchor their windows (5h *and*
+        weekly) to the FIRST request, not to a trailing clock: a window opens
+        on first use, lasts ``span`` seconds, and the next request after it
+        expires opens a new one. Replaying that rule over history yields the
         current anchor — and with it the exact reset time (anchor + span).
+
+        ``lookback_days=None`` replays the full history; required for the
+        weekly window, whose anchor chain must start at the true first use.
         """
+        since = 0.0 if lookback_days is None \
+            else time.time() - lookback_days * 86400.0
         rows = self._db.execute(
             "SELECT ts FROM usage WHERE tool = ? AND ts >= ? ORDER BY ts",
-            (tool, time.time() - lookback_days * 86400.0),
+            (tool, since),
         ).fetchall()
         anchor = None
         for (ts,) in rows:
