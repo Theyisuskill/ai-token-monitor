@@ -17,6 +17,11 @@ CONFIG_DIR = (
     / "ai-token-monitor"
 )
 CONFIG_PATH = CONFIG_DIR / "config.yaml"
+# Machine-written overrides (the extension's Preferences window). Merged on
+# top of config.yaml, so UI choices win over hand-edited values for the few
+# keys the UI manages (plans, budget_mode, budgets).
+UI_PATH = CONFIG_DIR / "ui.yaml"
+UI_KEYS = ("plans", "budget_mode", "budgets")
 DATA_DIR = (
     Path(os.environ.get("XDG_DATA_HOME", "~/.local/share")).expanduser()
     / "ai-token-monitor"
@@ -151,8 +156,10 @@ def resolve_budgets(
 
 
 class Config:
-    def __init__(self, data: dict[str, Any]):
+    def __init__(self, data: dict[str, Any], path: Path | None = None):
         self._data = data
+        #: Source config.yaml path, so the daemon can reload after SetSettings.
+        self.path = path
 
     def __getitem__(self, key: str) -> Any:
         return self._data[key]
@@ -211,4 +218,31 @@ def load(path: Path | str | None = None) -> Config:
             log.error("Ignoring invalid config %s: %s", path, exc)
     else:
         log.info("No config at %s, using defaults", path)
-    return Config(data)
+    if UI_PATH.is_file():
+        try:
+            ui = yaml.safe_load(UI_PATH.read_text()) or {}
+            if isinstance(ui, dict):
+                data = _deep_merge(data, {k: v for k, v in ui.items()
+                                          if k in UI_KEYS})
+        except (yaml.YAMLError, OSError) as exc:
+            log.error("Ignoring invalid UI overrides %s: %s", UI_PATH, exc)
+    return Config(data, path=path)
+
+
+def save_ui_overrides(changes: dict[str, Any]) -> None:
+    """Merge Preferences-window changes into ui.yaml (UI-managed keys only)."""
+    current: dict[str, Any] = {}
+    if UI_PATH.is_file():
+        try:
+            loaded = yaml.safe_load(UI_PATH.read_text())
+            if isinstance(loaded, dict):
+                current = loaded
+        except (yaml.YAMLError, OSError):
+            pass  # unreadable: rewrite from scratch
+    merged = _deep_merge(current, {k: v for k, v in changes.items()
+                                   if k in UI_KEYS})
+    UI_PATH.parent.mkdir(parents=True, exist_ok=True)
+    UI_PATH.write_text(
+        "# Written by the AI Token Monitor Preferences window.\n"
+        "# These keys override config.yaml; edit that file for everything else.\n"
+        + yaml.safe_dump(merged, sort_keys=True))

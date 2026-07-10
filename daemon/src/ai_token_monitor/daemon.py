@@ -216,6 +216,14 @@ class Daemon:
             "updated": time.time(),
         }
 
+    def reload_settings(self) -> None:
+        """Re-read config.yaml + ui.yaml (after a SetSettings write). Only the
+        UI-managed keys can change this way; database path, adapters and
+        pricing keep their process-lifetime values."""
+        from . import config as config_mod
+
+        self.config = config_mod.load(self.config.path)
+
     def _resolved_budgets(self) -> dict:
         """Plan-aware limits served to the UI. Presets are resolved from the
         user's declared plan; 'auto' mode calibrates from observed peaks."""

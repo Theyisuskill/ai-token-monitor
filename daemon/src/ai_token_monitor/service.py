@@ -50,6 +50,54 @@ class MonitorInterface:
         self._daemon.rescan()
         return json.dumps(self._daemon.snapshot())
 
+    def GetSettings(self) -> Str:
+        """Current plans/budget_mode plus the available presets, for the
+        Preferences window."""
+        from . import config as config_mod
+
+        cfg = self._daemon.config
+        effective = {
+            tool: cfg.plans.get(tool) or spec["default_plan"]
+            for tool, spec in config_mod.PLAN_PRESETS.items()
+        }
+        presets = {
+            tool: {"plans": list(spec["plans"]), "default": spec["default_plan"]}
+            for tool, spec in config_mod.PLAN_PRESETS.items()
+        }
+        return json.dumps({"plans": effective,
+                           "budget_mode": cfg.budget_mode,
+                           "presets": presets})
+
+    def SetSettings(self, settings: Str) -> Str:
+        """Apply Preferences-window changes: validate, persist to ui.yaml,
+        reload, push a fresh snapshot to every listener."""
+        from . import config as config_mod
+
+        try:
+            changes = json.loads(settings)
+            if not isinstance(changes, dict):
+                raise ValueError("settings must be a JSON object")
+        except ValueError as exc:
+            return json.dumps({"error": str(exc)})
+
+        plans = changes.get("plans") or {}
+        for tool, plan in plans.items():
+            spec = config_mod.PLAN_PRESETS.get(tool)
+            if spec is None:
+                return json.dumps({"error": f"unknown tool {tool!r}"})
+            if plan not in spec["plans"]:
+                return json.dumps({"error": f"unknown plan {plan!r} for {tool}",
+                                   "valid": list(spec["plans"])})
+        mode = changes.get("budget_mode")
+        if mode is not None and mode not in ("preset", "auto"):
+            return json.dumps({"error": f"unknown budget_mode {mode!r}",
+                               "valid": ["preset", "auto"]})
+
+        config_mod.save_ui_overrides(changes)
+        self._daemon.reload_settings()
+        self.UsageUpdated.emit(json.dumps(self._daemon.snapshot()))
+        return self.GetSettings()
+
     @dbus_signal
     def UsageUpdated(self, snapshot: Str):
         """Emitted (debounced) whenever new usage records are stored."""
