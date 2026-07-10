@@ -248,8 +248,9 @@ class ProgressBarRow extends PopupMenu.PopupBaseMenuItem {
 
 const Indicator = GObject.registerClass(
 class Indicator extends PanelMenu.Button {
-    _init() {
+    _init(extension) {
         super._init(0.5, 'AI Token Monitor');
+        this._extension = extension;
 
         const box = new St.BoxLayout({style_class: 'panel-status-menu-box'});
         box.add_child(new St.Icon({
@@ -550,6 +551,7 @@ class Indicator extends PanelMenu.Button {
                 'systemctl --user start ai-token-monitor', {reactive: false});
             hint.label.add_style_class_name('ai-progress-subtitle');
             this.menu.addMenuItem(hint);
+            this._addSettingsItem();
             return;
         }
 
@@ -563,6 +565,7 @@ class Indicator extends PanelMenu.Button {
                 {reactive: false});
             hint.label.add_style_class_name('ai-progress-subtitle');
             this.menu.addMenuItem(hint);
+            this._addSettingsItem();
             return;
         }
 
@@ -677,6 +680,18 @@ class Indicator extends PanelMenu.Button {
             style_class: 'ai-footer',
         }));
         this.menu.addMenuItem(footer);
+        this._addSettingsItem();
+    }
+
+    /** Preferences row at the bottom of the menu — the only in-widget path
+     * to the plan/budget-mode/display settings, so users don't need to know
+     * the Extensions app or `gnome-extensions prefs` even exists. */
+    _addSettingsItem() {
+        this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+        const item = new PopupMenu.PopupImageMenuItem(
+            _('Preferences…'), 'preferences-system-symbolic');
+        item.connect('activate', () => this._extension.openPreferences());
+        this.menu.addMenuItem(item);
     }
 
     /** Mini bar chart of the last 7 days' spend, stacked per tool in brand
@@ -802,7 +817,7 @@ class Indicator extends PanelMenu.Button {
 
 export default class AITokenMonitorExtension extends Extension {
     enable() {
-        this._indicator = new Indicator();
+        this._indicator = new Indicator(this);
         Main.panel.addToStatusArea(this.uuid, this._indicator, 0, 'right');
     }
 
