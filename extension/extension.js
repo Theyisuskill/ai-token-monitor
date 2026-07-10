@@ -144,27 +144,33 @@ function spanStr(seconds) {
 /** Subtitle tail for an anchored window bar (5h session or weekly): the
  * time left until the provider resets it, plus a burn-rate warning ONLY
  * when the limit would be hit before that reset — a projection that lands
- * after the reset is meaningless, the window empties first. */
+ * after the reset is meaningless, the window empties first.
+ * Returns {text, warn}; warn tints the subtitle amber. */
 function windowText(entry, budget, ratePerHour) {
     if (entry.session_active === false)
-        return _('no active session');
-    if (!entry.resets_at)
-        return etaText(entry.cost_usd, budget, ratePerHour);  // old daemon
+        return {text: _('no active session'), warn: false};
+    if (!entry.resets_at) {  // old daemon without anchoring
+        return {text: etaText(entry.cost_usd, budget, ratePerHour),
+            warn: false};
+    }
     const remaining = entry.resets_at - Date.now() / 1000;
     const resets = fmt(_('resets in %s'), spanStr(remaining));
     if (budget > 0 && entry.cost_usd >= budget)
-        return `${_('limit reached')} · ${resets}`;
+        return {text: `${_('limit reached')} · ${resets}`, warn: true};
     if (budget > 0 && ratePerHour > 0.005) {
         const etaSecs = (budget - entry.cost_usd) / ratePerHour * 3600;
-        if (etaSecs < remaining)
-            return `${fmt(_('≈%s to limit'), spanStr(etaSecs))} · ${resets}`;
+        if (etaSecs < remaining) {
+            return {text: `${fmt(_('≈%s to limit'), spanStr(etaSecs))} · ${resets}`,
+                warn: true};
+        }
     }
-    return resets;
+    return {text: resets, warn: false};
 }
 
 const ProgressBarRow = GObject.registerClass(
 class ProgressBarRow extends PopupMenu.PopupBaseMenuItem {
-    _init(title, cost, budget, tokens, extra = '', color = null) {
+    _init(title, cost, budget, tokens, extra = '', color = null,
+        extraWarn = false) {
         super._init({reactive: false});
 
         let pct = 0;
@@ -212,15 +218,22 @@ class ProgressBarRow extends PopupMenu.PopupBaseMenuItem {
         fill.set_style(style);
         track.add_child(fill);
 
-        let detail = budget > 0
-            ? fmt(_('%s of %s  ·  %s tokens'),
-                formatCost(cost), formatCost(budget), formatTokens(tokens))
-            : fmt(_('%s tokens'), formatTokens(tokens));
-        if (extra)
-            detail += `  ·  ${extra}`;
+        let detail;
+        if (cost <= 0 && tokens <= 0 && extra) {
+            detail = extra;  // idle window: skip the "$0.00 · 0 tokens" noise
+        } else {
+            detail = budget > 0
+                ? fmt(_('%s of %s  ·  %s tokens'),
+                    formatCost(cost), formatCost(budget), formatTokens(tokens))
+                : fmt(_('%s tokens'), formatTokens(tokens));
+            if (extra)
+                detail += `  ·  ${extra}`;
+        }
         const subtitle = new St.Label({
             text: detail,
-            style_class: 'ai-progress-subtitle',
+            style_class: extraWarn
+                ? 'ai-progress-subtitle ai-text-warn'
+                : 'ai-progress-subtitle',
         });
 
         vbox.add_child(titleRow);
@@ -262,6 +275,10 @@ class Indicator extends PanelMenu.Button {
         // Last alert bucket per "tool:period" (0 <70%, 1 ≥70, 2 ≥90, 3 ≥100);
         // notifying only on upward transitions gives natural hysteresis.
         this._alertState = new Map();
+        // Active 5h sessions from the previous snapshot (tool → resets_at),
+        // diffed to announce "fresh window" when one expires.
+        this._lastSessions = new Map();
+        this._resetTimerId = 0;
 
         this._rebuildMenu();
         this._initProxy();
@@ -367,7 +384,55 @@ class Indicator extends PanelMenu.Button {
         this._snapshot = snapshot;
         this._updatePanel();
         this._checkAlerts();
+        this._checkSessionResets();
+        this._scheduleResetTimer();
         this._rebuildMenu();
+    }
+
+    /** Announce a fresh 5h window when a session that was counting down has
+     * expired. Diff-based (not timer-based) so it also works after suspend,
+     * where GLib timers stall — the 120s poll or any signal catches up. */
+    _checkSessionResets() {
+        const now = Date.now() / 1000;
+        const current = new Map();
+        for (const t of this._snapshot?.five_hours?.tools ?? []) {
+            if (t.session_active && t.resets_at)
+                current.set(t.tool, t.resets_at);
+        }
+        if (this._snapshot?.ui?.alerts !== false) {
+            for (const [tool, resetsAt] of this._lastSessions) {
+                if (resetsAt <= now && current.get(tool) !== resetsAt) {
+                    Main.notify(
+                        fmt(_('%s — session reset'), toolStyle(tool).label),
+                        _('A fresh 5-hour window is available'));
+                }
+            }
+        }
+        this._lastSessions = current;
+    }
+
+    /** Precision wake-up at the next session reset; it only refreshes — the
+     * snapshot diff above does the announcing. */
+    _scheduleResetTimer() {
+        if (this._resetTimerId) {
+            GLib.source_remove(this._resetTimerId);
+            this._resetTimerId = 0;
+        }
+        const now = Date.now() / 1000;
+        let next = null;
+        for (const resetsAt of this._lastSessions.values()) {
+            if (resetsAt > now && (next === null || resetsAt < next))
+                next = resetsAt;
+        }
+        if (next === null)
+            return;
+        this._resetTimerId = GLib.timeout_add_seconds(
+            GLib.PRIORITY_DEFAULT, Math.max(2, Math.round(next - now) + 2),
+            () => {
+                this._resetTimerId = 0;
+                this._refresh();
+                return GLib.SOURCE_REMOVE;
+            });
     }
 
     /** Desktop notification when a limit bar crosses 70/90/100%. */
@@ -535,13 +600,15 @@ class Indicator extends PanelMenu.Button {
             const budgetWk = this._budget(`${style.prefix}_weekly`);
             // Both windows are anchored to first use, so each bar's tail
             // counts down to its real reset (burn-rate ETA only appears if
-            // the limit would be hit before then).
+            // the limit would be hit before then, tinted amber).
+            const session = windowText(fiveH, budget5h, hourRate);
+            const weekly = windowText(week, budgetWk, dayRate);
             this.menu.addMenuItem(new ProgressBarRow(
                 _('Session (5h)'), fiveH.cost_usd, budget5h, fiveH.total_tokens,
-                windowText(fiveH, budget5h, hourRate), style.color));
+                session.text, style.color, session.warn));
             this.menu.addMenuItem(new ProgressBarRow(
                 _('Weekly'), week.cost_usd, budgetWk, week.total_tokens,
-                windowText(week, budgetWk, dayRate), style.color));
+                weekly.text, style.color, weekly.warn));
 
             // Top models this week, tucked into a collapsible row.
             const models = week.models ?? [];
@@ -689,6 +756,10 @@ class Indicator extends PanelMenu.Button {
         if (this._timerId) {
             GLib.source_remove(this._timerId);
             this._timerId = 0;
+        }
+        if (this._resetTimerId) {
+            GLib.source_remove(this._resetTimerId);
+            this._resetTimerId = 0;
         }
         if (this._proxy) {
             if (this._signalId)

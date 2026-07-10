@@ -79,6 +79,13 @@ msgstr "%s — %s al %s%%"
 msgid "%s of %s used"
 msgstr "%s de %s usado"
 
+#. Fresh-window notification
+msgid "%s — session reset"
+msgstr "%s — sesión reseteada"
+
+msgid "A fresh 5-hour window is available"
+msgstr "Tienes una ventana de 5 horas limpia"
+
 #. Preferences window
 msgid "Limits"
 msgstr "Límites"
