@@ -60,6 +60,11 @@ export default class AITokenMonitorPrefs extends ExtensionPreferences {
         });
         page.add(modeGroup);
 
+        const displayGroup = new Adw.PreferencesGroup({
+            title: 'Display',
+        });
+        page.add(displayGroup);
+
         new SettingsProxy(Gio.DBus.session, BUS_NAME, OBJECT_PATH,
             (proxy, error) => {
                 if (error) {
@@ -79,8 +84,40 @@ export default class AITokenMonitorPrefs extends ExtensionPreferences {
                     if (!settings?.presets)
                         return;
                     this._buildRows(proxy, settings, plansGroup, modeGroup);
+                    this._buildDisplayRows(proxy, settings, displayGroup);
                 });
             });
+    }
+
+    _buildDisplayRows(proxy, settings, group) {
+        const ui = settings.ui ?? {};
+
+        const panelModes = ['percent', 'icon', 'today'];
+        const panelRow = new Adw.ComboRow({
+            title: 'Top bar',
+            subtitle: 'What the panel indicator shows next to the icon',
+            model: Gtk.StringList.new(['Percent used', 'Icon only', "Today's spend"]),
+        });
+        const current = panelModes.indexOf(ui.panel);
+        panelRow.selected = current >= 0 ? current : 0;
+        panelRow.connect('notify::selected', () => {
+            proxy.SetSettingsRemote(JSON.stringify({
+                ui: {panel: panelModes[panelRow.selected]},
+            }), () => {});
+        });
+        group.add(panelRow);
+
+        const alertsRow = new Adw.SwitchRow({
+            title: 'Limit notifications',
+            subtitle: 'Notify when a bar crosses 70%, 90% or 100%',
+            active: ui.alerts !== false,
+        });
+        alertsRow.connect('notify::active', () => {
+            proxy.SetSettingsRemote(JSON.stringify({
+                ui: {alerts: alertsRow.active},
+            }), () => {});
+        });
+        group.add(alertsRow);
     }
 
     _buildRows(proxy, settings, plansGroup, modeGroup) {

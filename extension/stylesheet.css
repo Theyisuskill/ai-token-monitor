@@ -71,10 +71,8 @@
     background-gradient-direction: horizontal;
 }
 
-.ai-fill-ok {
-    background-gradient-start: #4c9be8;
-    background-gradient-end: #62d09a;
-}
+/* Healthy fills wear the tool's brand color (set inline from JS); only the
+ * warn/danger severities are styled here so the alert colors stay uniform. */
 
 .ai-fill-warn {
     background-gradient-start: #f8c14e;
@@ -120,6 +118,12 @@
     background-gradient-direction: vertical;
     background-gradient-start: #62d09a;
     background-gradient-end: #4c9be8;
+}
+
+/* Per-tool segment of a stacked day column; its brand background-color is
+ * set inline from JS. Only the base segment keeps rounded bottom corners. */
+.ai-spark-seg {
+    margin: 0 2px;
 }
 
 /* -- footer ------------------------------------------------------------- */

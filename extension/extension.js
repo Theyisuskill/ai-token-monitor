@@ -92,6 +92,15 @@ function severityClass(pct) {
     return 'ok';
 }
 
+/** Blend a #rrggbb color toward white by factor f (0..1). */
+function lighten(hex, f) {
+    const n = parseInt(hex.slice(1), 16);
+    const ch = shift => Math.min(255,
+        Math.round(((n >> shift) & 0xff) + (255 - ((n >> shift) & 0xff)) * f));
+    return `#${((ch(16) << 16) | (ch(8) << 8) | ch(0))
+        .toString(16).padStart(6, '0')}`;
+}
+
 /** "at this pace" time-to-limit, from a burn rate in $/hour. */
 function etaText(cost, budget, ratePerHour) {
     if (!(budget > 0))
@@ -110,7 +119,7 @@ function etaText(cost, budget, ratePerHour) {
 
 const ProgressBarRow = GObject.registerClass(
 class ProgressBarRow extends PopupMenu.PopupBaseMenuItem {
-    _init(title, cost, budget, tokens, extra = '') {
+    _init(title, cost, budget, tokens, extra = '', color = null) {
         super._init({reactive: false});
 
         let pct = 0;
@@ -137,14 +146,25 @@ class ProgressBarRow extends PopupMenu.PopupBaseMenuItem {
         }));
 
         // Track + fill. Fill width is computed in px (St has no % widths).
+        // While usage is healthy the fill wears the tool's brand color; past
+        // 70/90% the severity classes (amber/red) take over — danger wins.
         const track = new St.BoxLayout({style_class: 'ai-progress-track'});
         const fillWidth = pct > 0
             ? Math.max(4, Math.round(TRACK_WIDTH * pct / 100))
             : 0;
+        const branded = sev === 'ok' && color;
         const fill = new St.BoxLayout({
-            style_class: `ai-progress-fill ai-fill-${sev}`,
+            style_class: branded
+                ? 'ai-progress-fill'
+                : `ai-progress-fill ai-fill-${sev}`,
         });
-        fill.set_style(`width: ${fillWidth}px;`);
+        let style = `width: ${fillWidth}px;`;
+        if (branded) {
+            style += ` background-gradient-direction: horizontal;` +
+                ` background-gradient-start: ${color};` +
+                ` background-gradient-end: ${lighten(color, 0.25)};`;
+        }
+        fill.set_style(style);
         track.add_child(fill);
 
         let detail = budget > 0
@@ -306,6 +326,8 @@ class Indicator extends PanelMenu.Button {
 
     /** Desktop notification when a limit bar crosses 70/90/100%. */
     _checkAlerts() {
+        if (this._snapshot?.ui?.alerts === false)
+            return;
         for (const id of this._activeTools()) {
             const style = toolStyle(id);
             for (const [period, label, budgetKey] of [
@@ -379,6 +401,17 @@ class Indicator extends PanelMenu.Button {
     }
 
     _updatePanel() {
+        const mode = this._snapshot?.ui?.panel ?? 'percent';
+        if (mode === 'icon') {
+            this._label.text = '';
+            return;
+        }
+        if (mode === 'today') {
+            this._label.text =
+                formatCost(this._snapshot?.today?.totals?.cost_usd ?? 0);
+            this._label.style_class = 'ai-panel-label';
+            return;
+        }
         const pressure = this._maxPressure();
         if (pressure === null) {
             this._label.text = '';
@@ -454,10 +487,10 @@ class Indicator extends PanelMenu.Button {
             const budgetWk = this._budget(`${style.prefix}_weekly`);
             this.menu.addMenuItem(new ProgressBarRow(
                 'Session (5h)', fiveH.cost_usd, budget5h, fiveH.total_tokens,
-                etaText(fiveH.cost_usd, budget5h, hourRate)));
+                etaText(fiveH.cost_usd, budget5h, hourRate), style.color));
             this.menu.addMenuItem(new ProgressBarRow(
                 'Weekly', week.cost_usd, budgetWk, week.total_tokens,
-                etaText(week.cost_usd, budgetWk, dayRate)));
+                etaText(week.cost_usd, budgetWk, dayRate), style.color));
 
             // Top models this week, tucked into a collapsible row.
             const models = week.models ?? [];
@@ -498,12 +531,15 @@ class Indicator extends PanelMenu.Button {
         this.menu.addMenuItem(footer);
     }
 
-    /** Mini bar chart of the last 7 days' spend (all tools combined). */
+    /** Mini bar chart of the last 7 days' spend, stacked per tool so each
+     * day shows who spent it (segments wear the tools' brand colors). */
     _addSparkline() {
         const daily = (this._snapshot.daily ?? []).slice(-7);
         if (daily.length < 2)
             return;
         const max = Math.max(...daily.map(d => d.cost_usd), 0.01);
+        // Stable stacking order: known tools first, then whatever else shows up.
+        const tools = this._activeTools();
 
         const item = new PopupMenu.PopupBaseMenuItem({reactive: false});
         const row = new St.BoxLayout({
@@ -517,12 +553,32 @@ class Indicator extends PanelMenu.Button {
                 x_expand: true,
             });
             col.add_child(new St.Widget({y_expand: true}));  // bottom-align
-            const h = Math.max(2, Math.round(22 * d.cost_usd / max));
-            col.add_child(new St.Widget({
-                style_class: 'ai-spark-bar',
-                style: `height: ${h}px;`,
-                x_expand: true,
-            }));
+            const byTool = d.by_tool ?? {};
+            const segments = tools.some(t => byTool[t] > 0)
+                ? tools
+                : null;  // old daemon without by_tool: single neutral bar
+            if (segments) {
+                // Stack top-to-bottom in reverse so tools[0] sits at the base.
+                for (const tool of [...segments].reverse()) {
+                    const cost = byTool[tool] ?? 0;
+                    if (!(cost > 0))
+                        continue;
+                    const h = Math.max(1, Math.round(22 * cost / max));
+                    col.add_child(new St.Widget({
+                        style_class: 'ai-spark-seg',
+                        style: `height: ${h}px;` +
+                            ` background-color: ${toolStyle(tool).color};`,
+                        x_expand: true,
+                    }));
+                }
+            } else {
+                const h = Math.max(2, Math.round(22 * d.cost_usd / max));
+                col.add_child(new St.Widget({
+                    style_class: 'ai-spark-bar',
+                    style: `height: ${h}px;`,
+                    x_expand: true,
+                }));
+            }
             row.add_child(col);
         }
         item.add_child(row);
