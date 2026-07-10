@@ -63,6 +63,42 @@ def test_delete_tool_and_reset_file_state(store):
     assert store.get_file_state("/other/claude.jsonl") == (2, 200)
 
 
+def test_summary_optional_tool_filter(store):
+    now = time.time()
+    store.add([rec(now, cost=2.0), rec(now, tool="codex", cost=5.0, dedup="x")])
+    only = store.summary(0, tool="codex")
+    assert only["totals"]["cost_usd"] == 5.0
+    assert [t["tool"] for t in only["tools"]] == ["codex"]
+
+
+def test_session_anchor_follows_first_use(store):
+    now = time.time()
+    t0 = now - 8 * 3600  # opened 8h ago, expired at t0+5h
+    store.add([
+        rec(t0, dedup="a"),
+        rec(t0 + 3600, dedup="b"),          # inside the first session
+        rec(now - 90 * 60, dedup="c"),      # >5h after t0: NEW session anchor
+        rec(now - 60, dedup="d"),
+    ])
+    anchor = store.session_anchor("claude_code")
+    assert anchor is not None
+    assert abs(anchor - (now - 90 * 60)) < 1
+
+
+def test_session_anchor_none_when_idle(store):
+    now = time.time()
+    store.add([rec(now - 9 * 3600, dedup="old")])  # expired 4h ago
+    assert store.session_anchor("claude_code") is None
+    assert store.session_anchor("never_used") is None
+
+
+def test_prune_drops_only_old_rows(store):
+    now = time.time()
+    store.add([rec(now - 100 * 86400, dedup="ancient"), rec(now, dedup="new")])
+    assert store.prune(now - 90 * 86400) == 1
+    assert store.summary(0)["totals"]["requests"] == 1
+
+
 def test_daily_series_breaks_down_by_tool(store):
     now = time.time()
     store.add([

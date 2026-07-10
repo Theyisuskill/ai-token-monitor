@@ -111,19 +111,25 @@ class Store:
         self._db.commit()
         return cur.rowcount
 
-    def summary(self, since: float) -> dict:
-        """Aggregate usage since an epoch, grouped by tool, plus totals."""
+    def summary(self, since: float, tool: str | None = None) -> dict:
+        """Aggregate usage since an epoch, grouped by tool, plus totals.
+
+        With ``tool`` the aggregation is restricted to that tool — used for
+        the per-tool anchored session windows, whose "since" differs per tool.
+        """
+        where = "ts >= ?" + (" AND tool = ?" if tool else "")
+        params: tuple = (since, tool) if tool else (since,)
         rows = self._db.execute(
-            """SELECT tool,
-                      COALESCE(SUM(input_tokens), 0),
-                      COALESCE(SUM(output_tokens), 0),
-                      COALESCE(SUM(cache_read_tokens), 0),
-                      COALESCE(SUM(cache_write_tokens), 0),
-                      COALESCE(SUM(cost_usd), 0),
-                      COUNT(*)
-               FROM usage WHERE ts >= ?
-               GROUP BY tool ORDER BY SUM(cost_usd) DESC""",
-            (since,),
+            f"""SELECT tool,
+                       COALESCE(SUM(input_tokens), 0),
+                       COALESCE(SUM(output_tokens), 0),
+                       COALESCE(SUM(cache_read_tokens), 0),
+                       COALESCE(SUM(cache_write_tokens), 0),
+                       COALESCE(SUM(cost_usd), 0),
+                       COUNT(*)
+                FROM usage WHERE {where}
+                GROUP BY tool ORDER BY SUM(cost_usd) DESC""",
+            params,
         ).fetchall()
 
         tools = []
@@ -169,6 +175,34 @@ class Store:
                 entries.append({"model": model, "cost_usd": round(cost, 4),
                                 "total_tokens": tokens})
         return result
+
+    def session_anchor(self, tool: str, span: float = 5.0 * 3600.0,
+                       lookback_days: int = 14) -> float | None:
+        """Start of the tool's current rate-limit session, or None if idle.
+
+        Claude Code, Antigravity and Codex all anchor their short window to
+        the FIRST request, not to a trailing clock: a session opens on first
+        use, lasts ``span`` seconds, and the next request after it expires
+        opens a new one. Replaying that rule over recent history yields the
+        current anchor — and with it the exact reset time (anchor + span).
+        """
+        rows = self._db.execute(
+            "SELECT ts FROM usage WHERE tool = ? AND ts >= ? ORDER BY ts",
+            (tool, time.time() - lookback_days * 86400.0),
+        ).fetchall()
+        anchor = None
+        for (ts,) in rows:
+            if anchor is None or ts > anchor + span:
+                anchor = ts
+        if anchor is None or time.time() >= anchor + span:
+            return None
+        return anchor
+
+    def prune(self, cutoff: float) -> int:
+        """Delete usage rows older than ``cutoff``. Returns rows removed."""
+        cur = self._db.execute("DELETE FROM usage WHERE ts < ?", (cutoff,))
+        self._db.commit()
+        return cur.rowcount
 
     def tools_seen(self) -> list[str]:
         """Every tool with at least one usage record, alphabetically.

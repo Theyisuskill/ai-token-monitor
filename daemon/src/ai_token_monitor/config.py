@@ -105,6 +105,9 @@ DEFAULTS: dict[str, Any] = {
     # Periodic full rescan: catches roots created after startup and any
     # inotify event that slipped through. Offsets make it near-free.
     "rescan_interval_s": 300,
+    # Days of usage history to keep (0 = forever). Pruned on start and on
+    # every periodic rescan.
+    "retention_days": 0,
     "adapters": {
         "claude_code": {"enabled": True, "root": "~/.claude/projects"},
         "gemini_cli": {"enabled": True, "root": "~/.gemini/tmp"},

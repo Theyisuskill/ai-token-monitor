@@ -23,6 +23,9 @@ from .watcher import LogWatcher
 
 log = logging.getLogger(__name__)
 
+#: How long a provider's short rate-limit session lasts once opened.
+SESSION_SPAN = 5.0 * 3600.0
+
 
 class Daemon:
     def __init__(self, config: Config):
@@ -46,6 +49,7 @@ class Daemon:
 
     def run(self) -> None:
         started = time.monotonic()
+        self._prune_old()
         self.backfill()
         log.info("Backfill finished in %.1fs", time.monotonic() - started)
 
@@ -134,10 +138,21 @@ class Daemon:
         # which GLib interprets as SOURCE_REMOVE — the rescan would silently
         # stop firing forever. Never let an exception escape this callback.
         try:
+            self._prune_old()
             self.rescan()
         except Exception:
             log.exception("Periodic rescan failed; will retry on next tick")
         return GLib.SOURCE_CONTINUE
+
+    def _prune_old(self) -> None:
+        """Apply the optional retention window (0 = keep everything)."""
+        days = float(self.config.get("retention_days", 0) or 0)
+        if days <= 0:
+            return
+        removed = self.store.prune(time.time() - days * 86400.0)
+        if removed:
+            log.info("Pruned %d usage records older than %g days",
+                     removed, days)
 
     def _ingest(self, adapter, paths: set[Path]) -> int:
         inserted = 0
@@ -195,6 +210,34 @@ class Daemon:
         result["period"] = period
         return result
 
+    def _anchored_sessions(self) -> dict:
+        """The snapshot's five_hours block: one entry per tool, each measured
+        from that tool's real session anchor (first use), with the exact
+        reset time. Providers anchor the 5h window to first use, so this —
+        unlike the trailing GetSummary("5h") — matches when they reset."""
+        empty = {"input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0,
+                 "cache_write_tokens": 0, "total_tokens": 0,
+                 "cost_usd": 0.0, "requests": 0}
+        tools = []
+        totals = dict(empty)
+        for tool in self.store.tools_seen():
+            anchor = self.store.session_anchor(tool, SESSION_SPAN)
+            if anchor is None:
+                entry = {"tool": tool, **empty, "session_active": False}
+            else:
+                result = self.store.summary(anchor, tool=tool)
+                entry = result["tools"][0] if result["tools"] else \
+                    {"tool": tool, **empty}
+                entry["session_active"] = True
+                entry["session_started"] = anchor
+                entry["resets_at"] = anchor + SESSION_SPAN
+            tools.append(entry)
+            for key in totals:
+                totals[key] += entry[key]
+        totals["cost_usd"] = round(totals["cost_usd"], 4)
+        return {"tools": tools, "totals": totals,
+                "period": "5h", "anchored": True}
+
     def snapshot(self) -> dict:
         week = self.summary("week")
         # Per-tool model breakdown rides on the week entries (the window the
@@ -203,7 +246,7 @@ class Daemon:
         for entry in week["tools"]:
             entry["models"] = models.get(entry["tool"], [])
         return {
-            "five_hours": self.summary("5h"),
+            "five_hours": self._anchored_sessions(),
             # Short rolling windows so the UI can estimate burn rate.
             "hour": self.summary("1h"),
             "day": self.summary("24h"),
