@@ -110,7 +110,32 @@ hardcoded to a particular vendor mix.
 `auto` ignores the tiers and instead calibrates each bar to your own busiest
 observed 5h / 7-day window — useful if you don't know your plan's equivalent
 value. Any explicit `budgets:` key (`claude_5h`, `claude_weekly`, `gemini_5h`,
-`gemini_weekly`) overrides both.
+`gemini_weekly`, `codex_5h`, `codex_weekly`) overrides both.
+
+Plans can also be picked from the extension's **Preferences window** (no YAML
+required): choices are persisted to `~/.config/ai-token-monitor/ui.yaml`,
+which overrides `config.yaml` for the UI-managed keys (`plans`,
+`budget_mode`, `budgets`).
+
+Around the bars the popup also shows:
+
+- **Time-to-limit projection** — "≈3h left" per bar, extrapolated from the
+  last hour (session bar) or last 24h (weekly bar) of spend.
+- **Desktop alerts** when any bar crosses 70% / 90% / 100%; each threshold
+  re-arms once usage drops back below it.
+- **By model** — a collapsible top-3 cost breakdown per tool for the week.
+- A 7-day spend sparkline above the footer.
+
+### Reparsing history
+
+Dedup keys are stable across re-reads, so parser or pricing fixes don't
+retroactively update rows that are already stored. After such a fix:
+
+```console
+$ systemctl --user stop ai-token-monitor
+$ ai-token-monitor --reparse gemini_cli   # drop + re-ingest one tool
+$ systemctl --user start ai-token-monitor
+```
 
 ## Writing an adapter
 

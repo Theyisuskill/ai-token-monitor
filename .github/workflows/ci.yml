@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # The daemon's GLib/D-Bus pieces need PyGObject, but everything under
+      # test (store, config, adapters, pricing) is pure Python by design.
+      - name: Install test dependencies
+        run: pip install pyyaml pytest
+
+      - name: Byte-compile the daemon
+        run: python -m compileall -q daemon/src
+
+      - name: Run the test suite
+        run: pytest daemon/tests -q
+
+      - name: Syntax-check the GNOME extension
+        run: |
+          node --check extension/extension.js
+          node --check extension/prefs.js

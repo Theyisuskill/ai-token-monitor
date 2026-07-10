@@ -15,6 +15,9 @@ adapters:
   gemini_cli:
     enabled: true
     root: ~/.gemini/tmp
+    # Model applied to Antigravity usage recorded before a model switch is
+    # seen in the conversation (rarely needed):
+    # default_model: gemini-3.5-flash
   codex:
     enabled: true
     root: ~/.codex/sessions
