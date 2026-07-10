@@ -38,8 +38,13 @@ install-services:
 
 install-extension:
 	install -d $(EXT_DIR)
-	install -m0644 extension/extension.js extension/metadata.json \
-	    extension/stylesheet.css $(EXT_DIR)/
+	install -m0644 extension/extension.js extension/prefs.js \
+	    extension/metadata.json extension/stylesheet.css $(EXT_DIR)/
+	@for po in extension/po/*.po; do \
+	    lang=$$(basename $$po .po); \
+	    install -d $(EXT_DIR)/locale/$$lang/LC_MESSAGES; \
+	    msgfmt $$po -o $(EXT_DIR)/locale/$$lang/LC_MESSAGES/$(UUID).mo; \
+	done
 
 enable:
 	gnome-extensions enable $(UUID)
@@ -56,7 +61,7 @@ uninstall-user:
 	rm -f $(UNIT_DIR)/ai-token-monitor.service $(DBUS_DIR)/$(DBUS_NAME).service
 
 pack:
-	gnome-extensions pack --force extension/
+	gnome-extensions pack --force --podir=po extension/
 	@echo "-> $(UUID).shell-extension.zip"
 
 srpm:

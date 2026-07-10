@@ -9,7 +9,7 @@ import Adw from 'gi://Adw';
 import Gio from 'gi://Gio';
 import Gtk from 'gi://Gtk';
 
-import {ExtensionPreferences} from 'resource:///org/gnome/Shell/Extensions/js/extensions/prefs.js';
+import {ExtensionPreferences, gettext as _} from 'resource:///org/gnome/Shell/Extensions/js/extensions/prefs.js';
 
 const BUS_NAME = 'io.github.theyisuskill.AITokenMonitor';
 const OBJECT_PATH = '/io/github/theyisuskill/AITokenMonitor';
@@ -44,24 +44,24 @@ function planLabel(plan) {
 export default class AITokenMonitorPrefs extends ExtensionPreferences {
     fillPreferencesWindow(window) {
         const page = new Adw.PreferencesPage({
-            title: 'Limits',
+            title: _('Limits'),
             icon_name: 'power-profile-performance-symbolic',
         });
         window.add(page);
 
         const plansGroup = new Adw.PreferencesGroup({
-            title: 'Subscription plans',
-            description: 'The 5-hour and weekly limit bars are scaled to your tier',
+            title: _('Subscription plans'),
+            description: _('The 5-hour and weekly limit bars are scaled to your tier'),
         });
         page.add(plansGroup);
 
         const modeGroup = new Adw.PreferencesGroup({
-            title: 'Budget mode',
+            title: _('Budget mode'),
         });
         page.add(modeGroup);
 
         const displayGroup = new Adw.PreferencesGroup({
-            title: 'Display',
+            title: _('Display'),
         });
         page.add(displayGroup);
 
@@ -69,7 +69,7 @@ export default class AITokenMonitorPrefs extends ExtensionPreferences {
             (proxy, error) => {
                 if (error) {
                     plansGroup.add(new Adw.ActionRow({
-                        title: 'Daemon offline',
+                        title: _('Daemon offline'),
                         subtitle: 'systemctl --user start ai-token-monitor',
                     }));
                     return;
@@ -94,9 +94,9 @@ export default class AITokenMonitorPrefs extends ExtensionPreferences {
 
         const panelModes = ['percent', 'icon', 'today'];
         const panelRow = new Adw.ComboRow({
-            title: 'Top bar',
-            subtitle: 'What the panel indicator shows next to the icon',
-            model: Gtk.StringList.new(['Percent used', 'Icon only', "Today's spend"]),
+            title: _('Top bar'),
+            subtitle: _('What the panel indicator shows next to the icon'),
+            model: Gtk.StringList.new([_('Percent used'), _('Icon only'), _("Today's spend")]),
         });
         const current = panelModes.indexOf(ui.panel);
         panelRow.selected = current >= 0 ? current : 0;
@@ -108,8 +108,8 @@ export default class AITokenMonitorPrefs extends ExtensionPreferences {
         group.add(panelRow);
 
         const alertsRow = new Adw.SwitchRow({
-            title: 'Limit notifications',
-            subtitle: 'Notify when a bar crosses 70%, 90% or 100%',
+            title: _('Limit notifications'),
+            subtitle: _('Notify when a bar crosses 70%, 90% or 100%'),
             active: ui.alerts !== false,
         });
         alertsRow.connect('notify::active', () => {
@@ -126,7 +126,7 @@ export default class AITokenMonitorPrefs extends ExtensionPreferences {
             const plans = preset.plans;
             const row = new Adw.ComboRow({
                 title: labels.title,
-                subtitle: labels.subtitle,
+                subtitle: labels.subtitle ? _(labels.subtitle) : '',
                 model: Gtk.StringList.new(plans.map(planLabel)),
             });
             const current = plans.indexOf(settings.plans[tool]);
@@ -142,9 +142,9 @@ export default class AITokenMonitorPrefs extends ExtensionPreferences {
 
         const modes = ['preset', 'auto'];
         const modeRow = new Adw.ComboRow({
-            title: 'Bar scaling',
-            subtitle: 'Preset: use the plan tiers above · Auto: calibrate to your own peak usage',
-            model: Gtk.StringList.new(['Preset', 'Auto']),
+            title: _('Bar scaling'),
+            subtitle: _('Preset: use the plan tiers above · Auto: calibrate to your own peak usage'),
+            model: Gtk.StringList.new([_('Preset'), _('Auto')]),
         });
         const mode = modes.indexOf(settings.budget_mode);
         modeRow.selected = mode >= 0 ? mode : 0;

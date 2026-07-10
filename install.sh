@@ -37,7 +37,19 @@ sed "s|/usr/bin/ai-token-monitor|$BIN|" data/$DBUS_NAME.service > "$DBUS_DIR/$DB
 # 3. Install GNOME extension
 echo "-> Installing GNOME extension"
 mkdir -p "$EXT_DIR"
-install -m0644 extension/extension.js extension/metadata.json extension/stylesheet.css "$EXT_DIR/"
+install -m0644 extension/extension.js extension/prefs.js \
+    extension/metadata.json extension/stylesheet.css "$EXT_DIR/"
+
+# 4. Compile translations (skipped when gettext-tools is not installed)
+if command -v msgfmt >/dev/null 2>&1; then
+    for po in extension/po/*.po; do
+        [ -e "$po" ] || continue
+        lang=$(basename "$po" .po)
+        echo "-> Compiling $lang translation"
+        mkdir -p "$EXT_DIR/locale/$lang/LC_MESSAGES"
+        msgfmt "$po" -o "$EXT_DIR/locale/$lang/LC_MESSAGES/$UUID.mo"
+    done
+fi
 
 echo ""
 echo "Installation complete! To activate everything, run:"

@@ -10,7 +10,7 @@ import Gio from 'gi://Gio';
 import St from 'gi://St';
 import Clutter from 'gi://Clutter';
 
-import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
+import {Extension, gettext as _} from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
@@ -84,6 +84,12 @@ function formatCost(v) {
     return `$${(Number.isFinite(v) ? v : 0).toFixed(2)}`;
 }
 
+/** Fill %s placeholders left-to-right (tiny printf for translated strings). */
+function fmt(template, ...args) {
+    let i = 0;
+    return template.replace(/%s/g, () => String(args[i++]));
+}
+
 function severityClass(pct) {
     if (pct >= 90)
         return 'danger';
@@ -106,15 +112,32 @@ function etaText(cost, budget, ratePerHour) {
     if (!(budget > 0))
         return '';
     if (cost >= budget)
-        return 'limit reached';
+        return _('limit reached');
     if (!(ratePerHour > 0.005))
         return '';  // idle or negligible burn: no meaningful projection
     const hours = (budget - cost) / ratePerHour;
+    let span;
     if (hours < 1)
-        return `≈${Math.max(1, Math.round(hours * 60))}m left`;
-    if (hours < 48)
-        return `≈${Math.round(hours)}h left`;
-    return `≈${Math.round(hours / 24)}d left`;
+        span = `${Math.max(1, Math.round(hours * 60))}m`;
+    else if (hours < 48)
+        span = `${Math.round(hours)}h`;
+    else
+        span = `${Math.round(hours / 24)}d`;
+    return fmt(_('≈%s left'), span);
+}
+
+/** Subtitle tail for the anchored 5h session bar. */
+function sessionText(entry, budget) {
+    if (entry.session_active === false)
+        return _('no active session');
+    if (!entry.resets_at)
+        return null;  // old daemon without anchoring
+    const at = new Date(entry.resets_at * 1000);
+    const resets = fmt(_('resets %s'),
+        `${at.getHours()}:${String(at.getMinutes()).padStart(2, '0')}`);
+    if (budget > 0 && entry.cost_usd >= budget)
+        return `${_('limit reached')} · ${resets}`;
+    return resets;
 }
 
 const ProgressBarRow = GObject.registerClass(
@@ -168,8 +191,9 @@ class ProgressBarRow extends PopupMenu.PopupBaseMenuItem {
         track.add_child(fill);
 
         let detail = budget > 0
-            ? `${formatCost(cost)} of ${formatCost(budget)}  ·  ${formatTokens(tokens)} tokens`
-            : `${formatTokens(tokens)} tokens`;
+            ? fmt(_('%s of %s  ·  %s tokens'),
+                formatCost(cost), formatCost(budget), formatTokens(tokens))
+            : fmt(_('%s tokens'), formatTokens(tokens));
         if (extra)
             detail += `  ·  ${extra}`;
         const subtitle = new St.Label({
@@ -331,8 +355,8 @@ class Indicator extends PanelMenu.Button {
         for (const id of this._activeTools()) {
             const style = toolStyle(id);
             for (const [period, label, budgetKey] of [
-                ['five_hours', 'Session (5h)', `${style.prefix}_5h`],
-                ['week', 'Weekly', `${style.prefix}_weekly`],
+                ['five_hours', _('Session (5h)'), `${style.prefix}_5h`],
+                ['week', _('Weekly'), `${style.prefix}_weekly`],
             ]) {
                 const budget = this._budget(budgetKey);
                 if (!(budget > 0))
@@ -344,8 +368,10 @@ class Indicator extends PanelMenu.Button {
                 const prev = this._alertState.get(key) ?? 0;
                 if (bucket > prev) {
                     Main.notify(
-                        `${style.label} — ${label} at ${Math.round(pct)}%`,
-                        `${formatCost(cost)} of ${formatCost(budget)} used`);
+                        fmt(_('%s — %s at %s%%'),
+                            style.label, label, Math.round(pct)),
+                        fmt(_('%s of %s used'),
+                            formatCost(cost), formatCost(budget)));
                 }
                 this._alertState.set(key, bucket);
             }
@@ -427,7 +453,7 @@ class Indicator extends PanelMenu.Button {
         this.menu.removeAll();
 
         if (!this._snapshot) {
-            const offline = new PopupMenu.PopupMenuItem('Daemon offline',
+            const offline = new PopupMenu.PopupMenuItem(_('Daemon offline'),
                 {reactive: false});
             this.menu.addMenuItem(offline);
             const hint = new PopupMenu.PopupMenuItem(
@@ -439,11 +465,11 @@ class Indicator extends PanelMenu.Button {
 
         const active = this._activeTools();
         if (!active.length) {
-            const empty = new PopupMenu.PopupMenuItem('No usage recorded yet',
+            const empty = new PopupMenu.PopupMenuItem(_('No usage recorded yet'),
                 {reactive: false});
             this.menu.addMenuItem(empty);
             const hint = new PopupMenu.PopupMenuItem(
-                'Use Claude Code, agy or Codex and it will appear here',
+                _('Use Claude Code, agy or Codex and it will appear here'),
                 {reactive: false});
             hint.label.add_style_class_name('ai-progress-subtitle');
             this.menu.addMenuItem(hint);
@@ -473,7 +499,7 @@ class Indicator extends PanelMenu.Button {
                 y_align: Clutter.ActorAlign.CENTER,
             }));
             header.add_child(new St.Label({
-                text: `${formatCost(week.cost_usd)} / wk`,
+                text: fmt(_('%s / wk'), formatCost(week.cost_usd)),
                 style_class: 'ai-tool-cost',
                 y_align: Clutter.ActorAlign.CENTER,
             }));
@@ -485,17 +511,22 @@ class Indicator extends PanelMenu.Button {
 
             const budget5h = this._budget(`${style.prefix}_5h`);
             const budgetWk = this._budget(`${style.prefix}_weekly`);
+            // The 5h window is anchored to the session start, so its tail
+            // shows the exact reset time (falls back to burn-rate ETA when
+            // talking to an older daemon).
             this.menu.addMenuItem(new ProgressBarRow(
-                'Session (5h)', fiveH.cost_usd, budget5h, fiveH.total_tokens,
-                etaText(fiveH.cost_usd, budget5h, hourRate), style.color));
+                _('Session (5h)'), fiveH.cost_usd, budget5h, fiveH.total_tokens,
+                sessionText(fiveH, budget5h) ??
+                    etaText(fiveH.cost_usd, budget5h, hourRate),
+                style.color));
             this.menu.addMenuItem(new ProgressBarRow(
-                'Weekly', week.cost_usd, budgetWk, week.total_tokens,
+                _('Weekly'), week.cost_usd, budgetWk, week.total_tokens,
                 etaText(week.cost_usd, budgetWk, dayRate), style.color));
 
             // Top models this week, tucked into a collapsible row.
             const models = week.models ?? [];
             if (models.length) {
-                const sub = new PopupMenu.PopupSubMenuMenuItem('By model');
+                const sub = new PopupMenu.PopupSubMenuMenuItem(_('By model'));
                 for (const m of models) {
                     const row = new PopupMenu.PopupBaseMenuItem({reactive: false});
                     row.add_child(new St.Label({
@@ -519,13 +550,15 @@ class Indicator extends PanelMenu.Button {
         const month = this._snapshot.month?.totals?.cost_usd ?? 0;
         const footer = new PopupMenu.PopupBaseMenuItem({reactive: false});
         footer.add_child(new St.Label({
-            text: `Today ${formatCost(today)}  ·  Month ${formatCost(month)}`,
+            text: fmt(_('Today %s  ·  Month %s'),
+                formatCost(today), formatCost(month)),
             style_class: 'ai-footer',
             x_expand: true,
         }));
         const updated = new Date((this._snapshot.updated ?? 0) * 1000);
         footer.add_child(new St.Label({
-            text: `Synced ${updated.getHours()}:${String(updated.getMinutes()).padStart(2, '0')}`,
+            text: fmt(_('Synced %s'),
+                `${updated.getHours()}:${String(updated.getMinutes()).padStart(2, '0')}`),
             style_class: 'ai-footer',
         }));
         this.menu.addMenuItem(footer);

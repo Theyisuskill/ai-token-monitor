@@ -1,0 +1,129 @@
+# Spanish translation for AI Token Monitor.
+# SPDX-License-Identifier: GPL-3.0-or-later
+msgid ""
+msgstr ""
+"Project-Id-Version: ai-token-monitor\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Language: es\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+
+#. Popup: bar titles
+msgid "Session (5h)"
+msgstr "Sesión (5h)"
+
+msgid "Weekly"
+msgstr "Semanal"
+
+#. Popup: per-tool submenu
+msgid "By model"
+msgstr "Por modelo"
+
+#. Popup: daemon not running
+msgid "Daemon offline"
+msgstr "Daemon desconectado"
+
+#. Popup: empty database
+msgid "No usage recorded yet"
+msgstr "Aún no hay uso registrado"
+
+msgid "Use Claude Code, agy or Codex and it will appear here"
+msgstr "Usa Claude Code, agy o Codex y aparecerá aquí"
+
+#. Bar subtitle: $cost of $budget · tokens
+msgid "%s of %s  ·  %s tokens"
+msgstr "%s de %s  ·  %s tokens"
+
+msgid "%s tokens"
+msgstr "%s tokens"
+
+#. Tool header: weekly spend
+msgid "%s / wk"
+msgstr "%s / sem"
+
+#. Footer
+msgid "Today %s  ·  Month %s"
+msgstr "Hoy %s  ·  Mes %s"
+
+msgid "Synced %s"
+msgstr "Sincronizado %s"
+
+#. Bar subtitle tails
+msgid "limit reached"
+msgstr "límite alcanzado"
+
+msgid "≈%s left"
+msgstr "≈%s restante"
+
+msgid "no active session"
+msgstr "sin sesión activa"
+
+msgid "resets %s"
+msgstr "resetea %s"
+
+#. Desktop notification: "<tool> — <window> at N%"
+msgid "%s — %s at %s%%"
+msgstr "%s — %s al %s%%"
+
+msgid "%s of %s used"
+msgstr "%s de %s usado"
+
+#. Preferences window
+msgid "Limits"
+msgstr "Límites"
+
+msgid "Subscription plans"
+msgstr "Planes de suscripción"
+
+msgid "The 5-hour and weekly limit bars are scaled to your tier"
+msgstr "Las barras de límite de 5 horas y semanal se escalan a tu plan"
+
+msgid "Budget mode"
+msgstr "Modo de presupuesto"
+
+msgid "Display"
+msgstr "Visualización"
+
+msgid "Bar scaling"
+msgstr "Escala de las barras"
+
+msgid "Preset: use the plan tiers above · Auto: calibrate to your own peak usage"
+msgstr "Preset: usa los planes de arriba · Auto: calibra con tus propios picos de uso"
+
+msgid "Preset"
+msgstr "Preset"
+
+msgid "Auto"
+msgstr "Auto"
+
+msgid "Top bar"
+msgstr "Barra superior"
+
+msgid "What the panel indicator shows next to the icon"
+msgstr "Qué muestra el indicador del panel junto al icono"
+
+msgid "Percent used"
+msgstr "Porcentaje usado"
+
+msgid "Icon only"
+msgstr "Solo icono"
+
+msgid "Today's spend"
+msgstr "Gasto de hoy"
+
+msgid "Limit notifications"
+msgstr "Notificaciones de límite"
+
+msgid "Notify when a bar crosses 70%, 90% or 100%"
+msgstr "Notifica cuando una barra cruza 70%, 90% o 100%"
+
+#. Plan combo subtitles
+msgid "Anthropic subscription"
+msgstr "Suscripción de Anthropic"
+
+msgid "Google AI subscription"
+msgstr "Suscripción de Google AI"
+
+msgid "ChatGPT subscription"
+msgstr "Suscripción de ChatGPT"
