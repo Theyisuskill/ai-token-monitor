@@ -42,3 +42,24 @@ def test_invalid_ui_yaml_is_ignored(paths):
 def test_budget_mode_falls_back_to_preset(paths):
     paths.write_text("budget_mode: nonsense\n")
     assert cfg.load(paths).budget_mode == "preset"
+
+
+def test_validate_ui():
+    assert cfg.validate_ui({"panel": "today", "alerts": False}) is None
+    assert cfg.validate_ui({}) is None
+    assert "panel mode" in cfg.validate_ui({"panel": "bogus"})
+    assert "alerts" in cfg.validate_ui({"alerts": "yes"})
+    assert "unknown ui keys" in cfg.validate_ui({"sparkles": True})
+    assert "object" in cfg.validate_ui("percent")
+
+
+def test_ui_settings_persist_and_merge(paths):
+    cfg.save_ui_overrides({"ui": {"panel": "today"}})
+    cfg.save_ui_overrides({"ui": {"alerts": False}})  # merges, not clobbers
+    ui = cfg.load(paths).ui
+    assert ui == {"panel": "today", "alerts": False}
+
+
+def test_invalid_ui_value_falls_back_to_defaults(paths):
+    paths.write_text("ui:\n  panel: bogus\n")
+    assert cfg.load(paths).ui == cfg.DEFAULT_UI

@@ -63,6 +63,21 @@ def test_delete_tool_and_reset_file_state(store):
     assert store.get_file_state("/other/claude.jsonl") == (2, 200)
 
 
+def test_daily_series_breaks_down_by_tool(store):
+    now = time.time()
+    store.add([
+        rec(now, cost=2.0, dedup="c1"),
+        rec(now - 30, tool="gemini_cli", cost=1.0, dedup="g1"),
+        rec(now - 2 * 86400, cost=5.0, dedup="c2"),
+    ])
+    series = store.daily_series(0)
+    assert len(series) == 2
+    today = series[-1]
+    assert today["cost_usd"] == 3.0
+    assert today["by_tool"] == {"claude_code": 2.0, "gemini_cli": 1.0}
+    assert series[0]["by_tool"] == {"claude_code": 5.0}
+
+
 def test_rolling_periods_are_trailing_windows():
     now = time.time()
     assert abs(period_start("1h") - (now - 3600)) < 5

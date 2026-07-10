@@ -59,8 +59,8 @@ def create_enabled(adapter_settings: dict[str, dict[str, Any]] | None) -> list[A
 
 
 # Built-in adapters register themselves on import. Keep these imports at the
-# bottom: they need `register` to exist. (cursor.py is an unfinished skeleton
-# and deliberately not imported.)
+# bottom: they need `register` to exist. Adapters for other tools should ship
+# as separate packages via the ai_token_monitor.adapters entry-point group.
 from . import claude_code as _claude_code  # noqa: E402,F401
 from . import codex as _codex  # noqa: E402,F401
 from . import gemini_cli as _gemini_cli  # noqa: E402,F401
