@@ -22,6 +22,9 @@ def main(argv: list[str] | None = None) -> int:
                         help="debug logging")
     parser.add_argument("--backfill", action="store_true",
                         help="scan all logs once, update the database, exit")
+    parser.add_argument("--reparse", metavar="TOOL",
+                        help="drop TOOL's usage history and re-ingest its logs "
+                             "from scratch (after parser/pricing fixes), exit")
     parser.add_argument("--summary", metavar="PERIOD",
                         choices=("1h", "5h", "24h", "today", "week", "month", "all"),
                         help="print a JSON summary from the database and exit")
@@ -57,6 +60,17 @@ def main(argv: list[str] | None = None) -> int:
     from .daemon import Daemon
 
     daemon = Daemon(cfg)
+    if args.reparse:
+        try:
+            inserted = daemon.reparse(args.reparse)
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            daemon.store.close()
+            return 2
+        print(f"reparse {args.reparse}: {inserted} records re-ingested",
+              file=sys.stderr)
+        daemon.store.close()
+        return 0
     if args.backfill:
         inserted = daemon.backfill()
         print(f"backfill: {inserted} new records", file=sys.stderr)

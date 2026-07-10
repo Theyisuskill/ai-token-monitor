@@ -111,6 +111,24 @@ class Daemon:
             watcher.rescan()
         self.backfill()
 
+    def reparse(self, tool: str) -> int:
+        """Drop a tool's usage and re-ingest its logs from scratch.
+
+        One-shot migration for parser/pricing fixes (e.g. the Antigravity
+        model extraction): dedup keys don't include model or cost, so a plain
+        backfill would INSERT OR IGNORE the old rows forever.
+        """
+        adapter = next((a for a in self.adapters if a.name == tool), None)
+        if adapter is None:
+            raise ValueError(
+                f"unknown or disabled tool {tool!r} "
+                f"(enabled: {', '.join(a.name for a in self.adapters)})")
+        dropped = self.store.delete_tool(tool)
+        for root in adapter.roots():
+            self.store.reset_file_state_under(str(root))
+        log.info("reparse %s: dropped %d rows, re-ingesting", tool, dropped)
+        return self.backfill()
+
     def _periodic_rescan(self) -> bool:
         # A GLib timeout callback that raises is treated as returning None,
         # which GLib interprets as SOURCE_REMOVE — the rescan would silently

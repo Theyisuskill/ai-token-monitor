@@ -222,6 +222,20 @@ class Store:
             for day, tokens, cost in rows
         ]
 
+    def delete_tool(self, tool: str) -> int:
+        """Drop every usage row for a tool (reparse migration). Returns rows."""
+        cur = self._db.execute("DELETE FROM usage WHERE tool = ?", (tool,))
+        self._db.commit()
+        return cur.rowcount
+
+    def reset_file_state_under(self, prefix: str) -> int:
+        """Forget tail offsets for every file under a directory prefix, so the
+        next backfill reparses those logs from byte 0."""
+        cur = self._db.execute(
+            "DELETE FROM file_state WHERE path LIKE ? || '%'", (prefix,))
+        self._db.commit()
+        return cur.rowcount
+
     # -- tail offsets ----------------------------------------------------------
 
     def get_file_state(self, path: str) -> tuple[int, int]:

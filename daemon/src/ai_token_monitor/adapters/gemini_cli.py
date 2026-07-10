@@ -1,15 +1,25 @@
-"""Gemini CLI adapter.
+"""Gemini CLI / Antigravity ("agy") adapter.
 
 Gemini CLI (legacy) writes per-session JSONL under
 ``~/.gemini/tmp/<project>/chats/session-<date>-<id>.jsonl``.
-Gemini CLI (modern: agy) stores conversations as SQLite databases under
-``~/.gemini/antigravity-cli/conversations/<id>.db``.
+Antigravity stores conversations as SQLite databases under
+``~/.gemini/antigravity-cli/conversations/<id>.db``: token usage lives in
+protobuf blobs on ``steps`` rows with ``step_type = 15``, and the model that
+produced each generation lives in the sibling ``gen_metadata`` table (field
+1.21 is the model-picker display name, e.g. "Gemini 3.1 Pro (High)"; field
+1.19 a family id). ``gen_metadata.idx`` doesn't line up 1:1 with the usage
+step's idx, so each usage step takes the model from the nearest preceding
+gen_metadata row — validated against real conversations to yield one dominant
+model per session with occasional mid-session switches, exactly matching how
+the model picker is used.
 """
 
 from __future__ import annotations
 
+import bisect
 import json
 import logging
+import re
 import sqlite3
 import time
 from collections.abc import Iterable, Iterator
@@ -93,6 +103,37 @@ def find_val_by_num(fields: list, num: int) -> any:
     return None
 
 
+def normalize_model_name(display: str) -> str:
+    """'Gemini 3.1 Pro (High)' -> 'gemini-3.1-pro-high'.
+
+    The canonical form both reads well in the UI and hits the fnmatch pricing
+    rules (gemini-*pro*, claude-sonnet-*, ...).
+    """
+    return re.sub(r"[^a-z0-9.]+", "-", display.lower()).strip("-")
+
+
+def model_from_gen_metadata(data: bytes) -> str | None:
+    """Model display name from a gen_metadata blob (field 1.21, else 1.19)."""
+    if not data:
+        return None
+    try:
+        f1 = find_msg_by_num(decode_protobuf(data), 1)
+        if not f1:
+            return None
+        for num in (21, 19):
+            val = find_val_by_num(f1, num)
+            if isinstance(val, bytes):
+                try:
+                    s = val.decode("utf-8")
+                except UnicodeDecodeError:
+                    continue
+                if s and s.isprintable():
+                    return s
+    except Exception:
+        pass
+    return None
+
+
 @register
 class GeminiCliAdapter(Adapter):
     name = "gemini_cli"
@@ -133,10 +174,28 @@ class GeminiCliAdapter(Adapter):
             cursor = conn.cursor()
             cursor.execute("SELECT idx, step_payload FROM steps WHERE step_type = 15;")
             rows = cursor.fetchall()
+            try:
+                gen_rows = cursor.execute(
+                    "SELECT idx, data FROM gen_metadata").fetchall()
+            except sqlite3.Error:
+                gen_rows = []  # older schema without the table
             conn.close()
         except Exception as e:
             log.warning("gemini_cli: failed to query SQLite db %s: %s", path, e)
             return
+
+        default_model = self.settings.get("default_model", "gemini-3.5-flash")
+        model_idx: list[int] = []
+        model_names: list[str] = []
+        for gidx, data in sorted(gen_rows):
+            name = model_from_gen_metadata(data)
+            if name:
+                model_idx.append(gidx)
+                model_names.append(normalize_model_name(name))
+
+        def model_for(step_idx: int) -> str:
+            pos = bisect.bisect_right(model_idx, step_idx) - 1
+            return model_names[pos] if pos >= 0 else default_model
 
         for idx, payload in rows:
             if not payload:
@@ -165,7 +224,7 @@ class GeminiCliAdapter(Adapter):
 
                 yield UsageRecord(
                     tool=self.name,
-                    model="gemini-3.5-flash",  # Default model for agy CLI usage
+                    model=model_for(idx),
                     ts=float(ts),
                     input_tokens=input_tokens,
                     output_tokens=output_tokens,
