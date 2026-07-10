@@ -42,6 +42,13 @@ msgstr "%s tokens"
 msgid "%s / wk"
 msgstr "%s / sem"
 
+#. Sparkline header
+msgid "Last 7 days"
+msgstr "Últimos 7 días"
+
+msgid "peak %s / day"
+msgstr "pico %s / día"
+
 #. Footer
 msgid "Today %s  ·  Month %s"
 msgstr "Hoy %s  ·  Mes %s"

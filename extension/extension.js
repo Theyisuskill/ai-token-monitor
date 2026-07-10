@@ -584,54 +584,99 @@ class Indicator extends PanelMenu.Button {
         this.menu.addMenuItem(footer);
     }
 
-    /** Mini bar chart of the last 7 days' spend, stacked per tool so each
-     * day shows who spent it (segments wear the tools' brand colors). */
+    /** Mini bar chart of the last 7 days' spend, stacked per tool in brand
+     * colors. Always renders seven labeled day slots (empty days get a dim
+     * baseline stub) so the shape reads as a calendar week even with sparse
+     * data, and a header anchors the scale (tallest bar = peak day). */
     _addSparkline() {
-        const daily = (this._snapshot.daily ?? []).slice(-7);
-        if (daily.length < 2)
+        const byDay = new Map(
+            (this._snapshot.daily ?? []).map(d => [d.day, d]));
+        if (!byDay.size)
             return;
-        const max = Math.max(...daily.map(d => d.cost_usd), 0.01);
-        // Stable stacking order: known tools first, then whatever else shows up.
+
+        const days = [];
+        for (let i = 6; i >= 0; i--) {
+            const date = new Date(Date.now() - i * 86400000);
+            const key = `${date.getFullYear()}-` +
+                `${String(date.getMonth() + 1).padStart(2, '0')}-` +
+                `${String(date.getDate()).padStart(2, '0')}`;
+            days.push({date, data: byDay.get(key), today: i === 0});
+        }
+        const max = Math.max(...days.map(d => d.data?.cost_usd ?? 0), 0.01);
         const tools = this._activeTools();
+
+        const title = new PopupMenu.PopupBaseMenuItem({reactive: false});
+        title.add_child(new St.Label({
+            text: _('Last 7 days'),
+            style_class: 'ai-progress-title',
+            x_expand: true,
+        }));
+        title.add_child(new St.Label({
+            text: fmt(_('peak %s / day'), formatCost(max)),
+            style_class: 'ai-progress-subtitle',
+        }));
+        this.menu.addMenuItem(title);
 
         const item = new PopupMenu.PopupBaseMenuItem({reactive: false});
         const row = new St.BoxLayout({
             style_class: 'ai-spark-row',
             x_expand: true,
         });
-        for (const d of daily) {
+        for (const {date, data, today} of days) {
             const col = new St.BoxLayout({
                 vertical: true,
                 style_class: 'ai-spark-col',
                 x_expand: true,
             });
-            col.add_child(new St.Widget({y_expand: true}));  // bottom-align
-            const byTool = d.by_tool ?? {};
-            const segments = tools.some(t => byTool[t] > 0)
-                ? tools
-                : null;  // old daemon without by_tool: single neutral bar
-            if (segments) {
-                // Stack top-to-bottom in reverse so tools[0] sits at the base.
-                for (const tool of [...segments].reverse()) {
-                    const cost = byTool[tool] ?? 0;
-                    if (!(cost > 0))
-                        continue;
-                    const h = Math.max(1, Math.round(22 * cost / max));
-                    col.add_child(new St.Widget({
-                        style_class: 'ai-spark-seg',
-                        style: `height: ${h}px;` +
-                            ` background-color: ${toolStyle(tool).color};`,
-                        x_expand: true,
-                    }));
-                }
-            } else {
-                const h = Math.max(2, Math.round(22 * d.cost_usd / max));
-                col.add_child(new St.Widget({
+            const bars = new St.BoxLayout({
+                vertical: true,
+                style_class: 'ai-spark-bars',
+            });
+            bars.add_child(new St.Widget({y_expand: true}));  // bottom-align
+            let drew = false;
+            const byTool = data?.by_tool ?? {};
+            // Stack in reverse so tools[0] sits at the base.
+            for (const tool of [...tools].reverse()) {
+                const cost = byTool[tool] ?? 0;
+                if (!(cost > 0))
+                    continue;
+                bars.add_child(new St.Widget({
+                    style_class: 'ai-spark-seg',
+                    style: `height: ${Math.max(1, Math.round(22 * cost / max))}px;` +
+                        ` background-color: ${toolStyle(tool).color};`,
+                    x_expand: true,
+                }));
+                drew = true;
+            }
+            if (!drew && data?.cost_usd > 0) {  // old daemon without by_tool
+                bars.add_child(new St.Widget({
                     style_class: 'ai-spark-bar',
-                    style: `height: ${h}px;`,
+                    style: `height: ${Math.max(2, Math.round(22 * data.cost_usd / max))}px;`,
+                    x_expand: true,
+                }));
+                drew = true;
+            }
+            if (!drew) {
+                bars.add_child(new St.Widget({
+                    style_class: 'ai-spark-empty',
                     x_expand: true,
                 }));
             }
+            col.add_child(bars);
+
+            let dayName;
+            try {
+                dayName = date.toLocaleDateString(undefined, {weekday: 'short'});
+            } catch {
+                dayName = '';
+            }
+            col.add_child(new St.Label({
+                text: `${dayName} ${date.getDate()}`.trim(),
+                style_class: today
+                    ? 'ai-spark-day ai-spark-today'
+                    : 'ai-spark-day',
+                x_align: Clutter.ActorAlign.CENTER,
+            }));
             row.add_child(col);
         }
         item.add_child(row);
