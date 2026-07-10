@@ -2,7 +2,7 @@
 %global dbus_name io.github.theyisuskill.AITokenMonitor
 
 Name:           ai-token-monitor
-Version:        0.2.0
+Version:        0.3.0
 Release:        1%{?dist}
 Summary:        Unified token-usage monitor for local AI CLI tools
 License:        GPL-3.0-or-later
@@ -81,6 +81,15 @@ install -pm0644 extension/extension.js extension/metadata.json \
 %{_datadir}/gnome-shell/extensions/%{ext_uuid}/
 
 %changelog
+* Thu Jul 09 2026 theyisuskill <theyisuskill@gmail.com> - 0.3.0-1
+- Anchor the 5h and weekly windows to each tool's real session start; both
+  bars count down to the exact reset, and burn-rate projections only show
+  when the limit lands before it
+- Fresh-window notification when a session resets; --waybar output for
+  Sway/Hyprland bars; optional retention_days pruning
+- Spanish translation (gettext); readable 7-day sparkline with labeled
+  calendar days; README screenshot
+
 * Thu Jul 09 2026 theyisuskill <theyisuskill@gmail.com> - 0.2.0-1
 - Rolling 5h/weekly windows matching provider limits; plan-aware budgets
   (preset per tier or auto-calibrated) with a Preferences window

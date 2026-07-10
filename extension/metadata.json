@@ -5,5 +5,5 @@
     "shell-version": ["45", "46", "47", "48", "49", "50"],
     "gettext-domain": "ai-token-monitor@theyisuskill.github.io",
     "url": "https://github.com/theyisuskill/ai-token-monitor",
-    "version-name": "0.2.0"
+    "version-name": "0.3.0"
 }
