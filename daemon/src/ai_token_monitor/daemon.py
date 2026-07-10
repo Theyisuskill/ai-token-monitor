@@ -213,6 +213,7 @@ class Daemon:
             "daily": self.store.daily_series(time.time() - 7 * 86400.0),
             "budgets": self._resolved_budgets(),
             "tools": self.store.tools_seen(),
+            "ui": self.config.ui,
             "updated": time.time(),
         }
 

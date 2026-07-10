@@ -207,20 +207,29 @@ class Store:
         return best
 
     def daily_series(self, since: float) -> list[dict]:
-        """Per-day totals (local time) — for future charting/CLI queries."""
+        """Per-day totals (local time) with a per-tool cost breakdown —
+        feeds the popup's stacked sparkline and the CLI --daily query."""
         rows = self._db.execute(
-            """SELECT date(ts, 'unixepoch', 'localtime') AS day,
+            """SELECT date(ts, 'unixepoch', 'localtime') AS day, tool,
                       COALESCE(SUM(input_tokens + output_tokens +
                                    cache_read_tokens + cache_write_tokens), 0),
                       COALESCE(SUM(cost_usd), 0)
                FROM usage WHERE ts >= ?
-               GROUP BY day ORDER BY day""",
+               GROUP BY day, tool ORDER BY day""",
             (since,),
         ).fetchall()
-        return [
-            {"day": day, "total_tokens": tokens, "cost_usd": round(cost, 4)}
-            for day, tokens, cost in rows
-        ]
+        days: dict[str, dict] = {}
+        for day, tool, tokens, cost in rows:
+            entry = days.setdefault(
+                day, {"day": day, "total_tokens": 0, "cost_usd": 0.0,
+                      "by_tool": {}})
+            entry["total_tokens"] += tokens
+            entry["cost_usd"] += cost
+            entry["by_tool"][tool] = round(
+                entry["by_tool"].get(tool, 0.0) + cost, 4)
+        for entry in days.values():
+            entry["cost_usd"] = round(entry["cost_usd"], 4)
+        return list(days.values())
 
     def delete_tool(self, tool: str) -> int:
         """Drop every usage row for a tool (reparse migration). Returns rows."""

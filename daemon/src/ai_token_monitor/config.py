@@ -21,7 +21,11 @@ CONFIG_PATH = CONFIG_DIR / "config.yaml"
 # top of config.yaml, so UI choices win over hand-edited values for the few
 # keys the UI manages (plans, budget_mode, budgets).
 UI_PATH = CONFIG_DIR / "ui.yaml"
-UI_KEYS = ("plans", "budget_mode", "budgets")
+UI_KEYS = ("plans", "budget_mode", "budgets", "ui")
+
+# extension display preferences (the "ui" config key)
+PANEL_MODES = ("percent", "icon", "today")
+DEFAULT_UI = {"panel": "percent", "alerts": True}
 DATA_DIR = (
     Path(os.environ.get("XDG_DATA_HOME", "~/.local/share")).expanduser()
     / "ai-token-monitor"
@@ -117,7 +121,27 @@ DEFAULTS: dict[str, Any] = {
         "weekly": 0.0,
         "monthly": 0.0,
     },
+    "ui": dict(DEFAULT_UI),
 }
+
+
+def validate_ui(ui: Any) -> str | None:
+    """Error message for an invalid "ui" settings value, or None if valid.
+
+    Pure so the D-Bus layer (which needs dasbus) isn't required to test it.
+    """
+    if not isinstance(ui, dict):
+        return "ui must be an object"
+    panel = ui.get("panel")
+    if panel is not None and panel not in PANEL_MODES:
+        return f"unknown panel mode {panel!r} (valid: {', '.join(PANEL_MODES)})"
+    alerts = ui.get("alerts")
+    if alerts is not None and not isinstance(alerts, bool):
+        return "alerts must be true or false"
+    unknown = set(ui) - {"panel", "alerts"}
+    if unknown:
+        return f"unknown ui keys: {', '.join(sorted(unknown))}"
+    return None
 
 
 def resolve_budgets(
@@ -193,6 +217,14 @@ class Config:
     def budget_mode(self) -> str:
         mode = str(self._data.get("budget_mode", "preset")).lower()
         return mode if mode in ("preset", "auto") else "preset"
+
+    @property
+    def ui(self) -> dict[str, Any]:
+        merged = dict(DEFAULT_UI)
+        value = self._data.get("ui")
+        if isinstance(value, dict) and validate_ui(value) is None:
+            merged.update(value)
+        return merged
 
 
 def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:

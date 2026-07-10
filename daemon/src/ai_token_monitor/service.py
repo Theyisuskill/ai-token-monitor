@@ -66,6 +66,7 @@ class MonitorInterface:
         }
         return json.dumps({"plans": effective,
                            "budget_mode": cfg.budget_mode,
+                           "ui": cfg.ui,
                            "presets": presets})
 
     def SetSettings(self, settings: Str) -> Str:
@@ -92,6 +93,10 @@ class MonitorInterface:
         if mode is not None and mode not in ("preset", "auto"):
             return json.dumps({"error": f"unknown budget_mode {mode!r}",
                                "valid": ["preset", "auto"]})
+        if "ui" in changes:
+            problem = config_mod.validate_ui(changes["ui"])
+            if problem:
+                return json.dumps({"error": problem})
 
         config_mod.save_ui_overrides(changes)
         self._daemon.reload_settings()
