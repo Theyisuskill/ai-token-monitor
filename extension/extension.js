@@ -72,6 +72,28 @@ function toolStyle(id) {
     return {label, short: label, color: '#9a9aa5', prefix: id};
 }
 
+// Per-provider web links, opened in the default browser from the card footer —
+// CodexBar's "Usage Dashboard" / "Status Page" rows. Only the ones that map
+// cleanly to a real page are included (no "Add Account": this app reads
+// whatever credential is on disk, it has no multi-account concept). URLs match
+// the ones CodexBar uses.
+const TOOL_LINKS = {
+    claude_code: {
+        dashboard: 'https://claude.ai/settings/usage',
+        status: 'https://status.claude.com/',
+    },
+    gemini_cli: {  // Antigravity / Gemini — usage lives in the IDE; status only
+        status: 'https://status.cloud.google.com',
+    },
+    codex: {
+        dashboard: 'https://chatgpt.com/codex/settings/usage',
+        status: 'https://status.openai.com',
+    },
+    opencode: {
+        dashboard: 'https://opencode.ai',
+    },
+};
+
 function formatTokens(n) {
     if (!Number.isFinite(n))
         return '0';
@@ -686,6 +708,35 @@ class Indicator extends PanelMenu.Button {
         this.menu.addMenuItem(row);
     }
 
+    /** Per-provider action rows (Usage dashboard / Status page) that open the
+     * provider's web page in the default browser — CodexBar's card footer. */
+    _addProviderLinks(id) {
+        const links = TOOL_LINKS[id];
+        if (!links)
+            return;
+        const rows = [];
+        if (links.dashboard)
+            rows.push([_('Usage dashboard'),
+                'utilities-system-monitor-symbolic', links.dashboard]);
+        if (links.status)
+            rows.push([_('Status page'),
+                'network-transmit-receive-symbolic', links.status]);
+        if (!rows.length)
+            return;
+        this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+        for (const [label, icon, url] of rows) {
+            const item = new PopupMenu.PopupImageMenuItem(label, icon);
+            item.connect('activate', () => {
+                try {
+                    Gio.AppInfo.launch_default_for_uri(url, null);
+                } catch (e) {
+                    console.warn(`[ai-token-monitor] open ${url}: ${e}`);
+                }
+            });
+            this.menu.addMenuItem(item);
+        }
+    }
+
     /** One provider's detailed card, CodexBar-style: header with plan tier;
      * Session + Weekly bars (per-pool for grouped tools, provider-real when a
      * live poller supplied it, with a pace line); a per-model breakdown (real
@@ -795,6 +846,8 @@ class Indicator extends PanelMenu.Button {
             `${formatCost(today.cost_usd)}  ·  ${formatTokens(today.total_tokens)}`);
         this._addKeyValueRow(_('This month'),
             `${formatCost(month.cost_usd)}  ·  ${formatTokens(month.total_tokens)}`);
+
+        this._addProviderLinks(id);
     }
 
     _rebuildMenu() {
