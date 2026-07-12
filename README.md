@@ -28,7 +28,8 @@ down to the actual reset; sections appear only for the tools you use.*
 │  Adapters (plugin registry + entry points)                         │
 │     ├── claude_code   ~/.claude/projects/**/*.jsonl                │
 │     ├── gemini_cli    ~/.gemini/tmp/**  +  antigravity-cli/*.db    │
-│     └── codex         ~/.codex/sessions/**/rollout-*.jsonl         │
+│     ├── codex         ~/.codex/sessions/**/rollout-*.jsonl         │
+│     └── opencode      ~/.local/share/opencode/opencode.db          │
 │     │ UsageRecord (normalized)                                     │
 │  CostEngine (pricing rules from config.yaml)                       │
 │     │                                                              │
@@ -116,6 +117,20 @@ hardcoded to a particular vendor mix.
 observed 5h / 7-day window — useful if you don't know your plan's equivalent
 value. Any explicit `budgets:` key (`claude_5h`, `claude_weekly`, `gemini_5h`,
 `gemini_weekly`, `codex_5h`, `codex_weekly`) overrides both.
+
+### Real limits (live)
+
+The bars above are *estimates* — they scale token spend by a dollar-equivalent
+budget. For Claude Code the daemon can instead show the provider's **real**
+5-hour and weekly percentage with its exact reset, read from the OAuth usage
+API using the token Claude Code already stores in `~/.claude/.credentials.json`
+(the token needs the `user:profile` scope). Such a bar is marked with a teal
+"live" dot and drives the top-bar percentage and alerts. This is the one
+network feature — an opt-in relaxation of the local-only default — and it is
+**read-only**: the daemon never rewrites the credential file. Configure under
+`live_limits:` (enabled for `claude_code` by default; set `enabled: false` to
+stay estimate-only). See `docs/codexbar-port-roadmap.md` for the other
+providers this pattern can cover.
 
 Plans can also be picked from the extension's **Preferences window** (no YAML
 required): choices are persisted to `~/.config/ai-token-monitor/ui.yaml`,

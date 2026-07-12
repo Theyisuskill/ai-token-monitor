@@ -21,6 +21,12 @@ adapters:
   codex:
     enabled: true
     root: ~/.codex/sessions
+  opencode:
+    enabled: true
+    # OpenCode keeps one SQLite db; leave `root` unset for the default
+    # ~/.local/share/opencode (honours $XDG_DATA_HOME). OpenCode prices each
+    # turn itself, so its real spend is shown even for models not in `pricing`.
+    # root: ~/.local/share/opencode
   # Third-party adapters (installed via pip entry points) are configured the
   # same way, keyed by their `name`.
 
@@ -38,6 +44,33 @@ plans:
 # auto   = ignore the tiers and calibrate each bar to your own busiest observed
 #          5h / 7d window (self-adjusting; needs no plan knowledge).
 budget_mode: preset
+
+# Live limit pollers — read the provider's OWN 5h/weekly percentage and reset
+# instead of the dollar estimate above. This makes an outbound request (an
+# opt-in relaxation of the local-only default), so it's enabled per tool.
+# The Claude poller reads ~/.claude/.credentials.json (the OAuth token Claude
+# Code already stores; needs the `user:profile` scope) and calls the Anthropic
+# usage API. It is READ-ONLY — it never rewrites that file. When live data is
+# present the popup shows a real bar (teal "live" dot) with the exact reset,
+# and the plan/budget scaling above is only used as the fallback.
+live_limits:
+  claude_code:
+    enabled: true      # set false to stay fully local (estimate-only)
+    interval_s: 90
+    # credentials: ~/.claude/.credentials.json
+    # timeout_s: 15
+  # Antigravity ("agy", shown under the gemini_cli tool): tries the running
+  # Antigravity language server on 127.0.0.1 first (real two-pool quota), then
+  # falls back to ~/.gemini/oauth_creds.json. Off by default because it probes
+  # local server ports and only yields data while Antigravity is running.
+  antigravity:
+    enabled: false
+    interval_s: 120
+    # ports: [40495, 42155]   # override /proc port discovery if needed
+  # OpenAI Codex CLI (~/.codex/auth.json). Off by default; enable if you use it.
+  codex:
+    enabled: false
+    interval_s: 120
 
 # Optional. daily/weekly/monthly are informational only. Any per-tool key here
 # (claude_5h, claude_weekly, gemini_5h, gemini_weekly) OVERRIDES the plan preset

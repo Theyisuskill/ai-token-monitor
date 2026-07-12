@@ -64,3 +64,4 @@ def create_enabled(adapter_settings: dict[str, dict[str, Any]] | None) -> list[A
 from . import claude_code as _claude_code  # noqa: E402,F401
 from . import codex as _codex  # noqa: E402,F401
 from . import gemini_cli as _gemini_cli  # noqa: E402,F401
+from . import opencode as _opencode  # noqa: E402,F401

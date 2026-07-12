@@ -25,7 +25,11 @@ UI_KEYS = ("plans", "budget_mode", "budgets", "ui")
 
 # extension display preferences (the "ui" config key)
 PANEL_MODES = ("percent", "icon", "today")
-DEFAULT_UI = {"panel": "percent", "alerts": True}
+# Popup layout: "switcher" = a provider tab bar at the top with one detailed
+# card at a time (compact, CodexBar-style); "stacked" = every provider's full
+# section listed at once (the original layout).
+LAYOUT_MODES = ("switcher", "stacked")
+DEFAULT_UI = {"panel": "percent", "alerts": True, "layout": "switcher"}
 DATA_DIR = (
     Path(os.environ.get("XDG_DATA_HOME", "~/.local/share")).expanduser()
     / "ai-token-monitor"
@@ -112,11 +116,30 @@ DEFAULTS: dict[str, Any] = {
         "claude_code": {"enabled": True, "root": "~/.claude/projects"},
         "gemini_cli": {"enabled": True, "root": "~/.gemini/tmp"},
         "codex": {"enabled": True, "root": "~/.codex/sessions"},
+        # OpenCode keeps its own SQLite db; leave "root" unset to use the
+        # default ~/.local/share/opencode (honours $XDG_DATA_HOME).
+        "opencode": {"enabled": True},
     },
     "pricing": DEFAULT_PRICING,
     # Subscription tier per tool (keys are adapter names). Resolved against
     # PLAN_PRESETS; anything unset falls back to that tool's default_plan.
     "plans": {},
+    # Live limit pollers: read the provider's OWN 5h/weekly percentage + reset
+    # from a credential already on disk, instead of the dollar-scaled estimate.
+    # This makes an outbound request (a deliberate opt-in relaxation of the
+    # local-only default), so each poller is enabled explicitly. The Claude
+    # poller is read-only: it never rewrites ~/.claude/.credentials.json.
+    "live_limits": {
+        # Verified read-only OAuth poller — on by default.
+        "claude_code": {"enabled": True, "interval_s": 90},
+        # Antigravity ("agy", tool=gemini_cli): local-loopback quota first,
+        # Google-OAuth fallback. Off by default — it probes local server ports
+        # and only yields data while Antigravity is running; enable to try.
+        "antigravity": {"enabled": False, "interval_s": 120},
+        # Codex/ChatGPT (~/.codex/auth.json). Off by default — portable but
+        # only useful if you use the Codex CLI.
+        "codex": {"enabled": False, "interval_s": 120},
+    },
     # "preset": use the plan presets. "auto": calibrate from observed peaks.
     "budget_mode": "preset",
     "budgets": {
@@ -138,10 +161,13 @@ def validate_ui(ui: Any) -> str | None:
     panel = ui.get("panel")
     if panel is not None and panel not in PANEL_MODES:
         return f"unknown panel mode {panel!r} (valid: {', '.join(PANEL_MODES)})"
+    layout = ui.get("layout")
+    if layout is not None and layout not in LAYOUT_MODES:
+        return f"unknown layout {layout!r} (valid: {', '.join(LAYOUT_MODES)})"
     alerts = ui.get("alerts")
     if alerts is not None and not isinstance(alerts, bool):
         return "alerts must be true or false"
-    unknown = set(ui) - {"panel", "alerts"}
+    unknown = set(ui) - {"panel", "alerts", "layout"}
     if unknown:
         return f"unknown ui keys: {', '.join(sorted(unknown))}"
     return None
@@ -215,6 +241,11 @@ class Config:
     @property
     def plans(self) -> dict[str, str]:
         return self._data.get("plans") or {}
+
+    @property
+    def live_limits(self) -> dict[str, dict[str, Any]]:
+        value = self._data.get("live_limits")
+        return value if isinstance(value, dict) else {}
 
     @property
     def budget_mode(self) -> str:

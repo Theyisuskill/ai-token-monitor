@@ -5,6 +5,7 @@ from __future__ import annotations
 import dataclasses
 import logging
 import signal
+import threading
 import time
 from functools import partial
 from pathlib import Path
@@ -14,7 +15,7 @@ import gi
 gi.require_version("Gio", "2.0")
 from gi.repository import GLib  # noqa: E402
 
-from . import adapters
+from . import adapters, live
 from .config import Config
 from .pricing import CostEngine
 from .service import MonitorInterface, publish
@@ -59,6 +60,11 @@ class Daemon:
                                  partial(self._ingest, adapter)))
             for adapter in self.adapters
         ]
+        # Live-limit pollers (opt-in, network): latest normalized result per
+        # tool, plus a per-poller "busy" guard so polls never overlap.
+        self.pollers = live.create_enabled(config.live_limits)
+        self._live: dict[str, dict] = {}
+        self._live_busy: dict[str, bool] = {}
         self.interface = MonitorInterface(self)
         self._bus = None
         self._loop = None
@@ -79,6 +85,12 @@ class Daemon:
         interval = int(self.config.get("rescan_interval_s", 300))
         if interval > 0:
             GLib.timeout_add_seconds(interval, self._periodic_rescan)
+
+        for poller in self.pollers:
+            log.info("Live poller %s (tool=%s) every %ds",
+                     poller.name, poller.tool, poller.interval)
+            GLib.timeout_add_seconds(2, self._poll_once, poller)
+            GLib.timeout_add_seconds(poller.interval, self._poll_tick, poller)
 
         self._loop = GLib.MainLoop()
         for signum in (signal.SIGINT, signal.SIGTERM):
@@ -163,6 +175,69 @@ class Daemon:
             log.exception("Periodic rescan failed; will retry on next tick")
         return GLib.SOURCE_CONTINUE
 
+    # -- live limit pollers ----------------------------------------------------
+
+    def _poll_tick(self, poller) -> bool:
+        self._poll_once(poller)
+        return GLib.SOURCE_CONTINUE
+
+    def _poll_once(self, poller) -> bool:
+        """Kick a poll on a worker thread unless one is already in flight."""
+        if not self._live_busy.get(poller.name):
+            self._live_busy[poller.name] = True
+            threading.Thread(target=self._poll_worker, args=(poller,),
+                             daemon=True).start()
+        return GLib.SOURCE_REMOVE
+
+    def _poll_worker(self, poller) -> None:
+        # Off the main loop: no store/GLib access here. poll() never raises,
+        # but guard anyway so a bug can't wedge the busy flag.
+        try:
+            result = poller.poll()
+        except Exception:
+            log.exception("live poller %s crashed", poller.name)
+            result = {"status": "error", "fetched_at": time.time()}
+        GLib.idle_add(self._apply_live, poller.name, poller.tool, result)
+
+    def _apply_live(self, name: str, tool: str, result: dict) -> bool:
+        self._live_busy[name] = False
+        self._live[tool] = result
+        log.debug("live %s: %s", tool, result.get("status"))
+        self._schedule_emit()
+        return GLib.SOURCE_REMOVE
+
+    def _attach_live(self, snap: dict) -> None:
+        """Merge poller results into the snapshot: a per-tool `real` block on
+        the 5h/weekly window entries, plus a top-level `live` status map so the
+        UI can show which bars are provider-real vs estimated, and why."""
+        status = {}
+        for tool, res in self._live.items():
+            status[tool] = {"status": res.get("status"),
+                            "fetched_at": res.get("fetched_at"),
+                            "plan_tier": res.get("plan_tier")}
+            if res.get("status") != "ok":
+                continue
+            windows = res.get("windows") or {}
+            for period, key in (("five_hours", "five_hour"), ("week", "weekly")):
+                w = windows.get(key)
+                if not w:
+                    continue
+                entry = next((t for t in snap.get(period, {}).get("tools", [])
+                              if t.get("tool") == tool), None)
+                if entry is not None:
+                    entry["real"] = {"used_percent": w.get("used_percent"),
+                                     "resets_at": w.get("resets_at"),
+                                     "source": "provider"}
+            scoped = res.get("scoped")
+            if scoped:
+                entry = next((t for t in snap.get("week", {}).get("tools", [])
+                              if t.get("tool") == tool), None)
+                if entry is not None:
+                    entry["real_scoped"] = scoped
+            if res.get("extra_usage"):
+                status[tool]["extra_usage"] = res["extra_usage"]
+        snap["live"] = status
+
     def _prune_old(self) -> None:
         """Apply the optional retention window (0 = keep everything)."""
         days = float(self.config.get("retention_days", 0) or 0)
@@ -214,8 +289,12 @@ class Daemon:
             return 0  # no complete line yet; keep the offset where it was
         lines = data[:cut].decode("utf-8", errors="replace").splitlines()
 
+        # An adapter that already knows the authoritative cost (OpenCode prices
+        # each turn against live provider rates and stores it) keeps it; every
+        # other adapter leaves cost_usd at 0.0 and we price it from the model.
         records = [
-            dataclasses.replace(record, cost_usd=self.engine.cost(record))
+            dataclasses.replace(
+                record, cost_usd=record.cost_usd or self.engine.cost(record))
             for record in adapter.parse(path, lines)
         ]
         inserted = self.store.add(records)
@@ -298,7 +377,7 @@ class Daemon:
         models = self.store.models_summary(period_start("week"))
         for entry in week["tools"]:
             entry["models"] = models.get(entry["tool"], [])
-        return {
+        snap = {
             "five_hours": self._anchored_window(SESSION_SPAN, "5h", 14),
             # Short rolling windows so the UI can estimate burn rate.
             "hour": self.summary("1h"),
@@ -312,6 +391,10 @@ class Daemon:
             "ui": self.config.ui,
             "updated": time.time(),
         }
+        # Overlay the provider's real 5h/weekly % + reset where a live poller
+        # has data (prefer real over the dollar-scaled estimate in the UI).
+        self._attach_live(snap)
+        return snap
 
     def reload_settings(self) -> None:
         """Re-read config.yaml + ui.yaml (after a SetSettings write). Only the

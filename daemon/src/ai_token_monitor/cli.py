@@ -15,7 +15,7 @@ SESSION_SPAN = 5.0 * 3600.0
 WEEK_SPAN = 7.0 * 24.0 * 3600.0
 
 TOOL_LABELS = {"claude_code": "Claude Code", "gemini_cli": "agy",
-               "codex": "Codex"}
+               "codex": "Codex", "opencode": "OpenCode"}
 
 
 def waybar_status(store, cfg) -> dict:
