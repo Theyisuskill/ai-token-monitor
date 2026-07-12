@@ -1,24 +1,81 @@
 /* AI Token Monitor — popup + panel styling.
- * Neutral rgba() grays so it tracks the shell theme; severity colors are
- * shared between the panel label and the bar fills. The fill width is set
- * in pixels from JS (St CSS has no percentage widths) against the 300px
- * track below — keep the two in sync. */
+ *
+ * Visual language mirrors CodexBar: a dark card, thin fully-rounded "pill"
+ * meters with a teal fill, and muted zinc-grey labels (label left, percentage
+ * right). Severity (amber/red past 70/90%) is layered on top — that is this
+ * app's own signal and stays uniform across tools. The fill width is set in
+ * pixels from JS (St CSS has no percentage widths) against the 300px track
+ * below — keep the two in sync. */
+
+/* CodexBar-ish palette (zinc neutrals + teal accent), for reference:
+ *   text primary   #f4f4f5   secondary #a1a1aa   muted #71717a
+ *   teal fill      #3aa7bf -> #49c3d1
+ *   warn #f2b13a   danger #ff5f57 */
 
 /* -- top bar ---------------------------------------------------------- */
 
 .ai-panel-label {
     font-size: 11px;
     font-weight: 700;
-    padding-left: 3px;
+    padding-left: 4px;
 }
 
 /* Severity text colors (panel % and per-bar %). "ok" inherits the theme. */
 .ai-text-warn {
-    color: #f5a83c;
+    color: #f2b13a;
 }
 
 .ai-text-danger {
-    color: #ff6b5e;
+    color: #ff5f57;
+}
+
+/* -- provider switcher (tab bar) --------------------------------------- */
+
+.ai-tabbar-item {
+    padding: 2px 4px 4px 4px;
+}
+
+.ai-tabbar {
+    spacing: 4px;
+}
+
+/* Each tab: muted pill that brightens on hover; the active one wears a teal
+ * wash. Mirrors CodexBar's provider switcher along the top of the card. */
+.ai-tab {
+    padding: 4px 9px;
+    border-radius: 8px;
+    color: #a1a1aa;
+}
+
+.ai-tab:hover {
+    background-color: rgba(255, 255, 255, 0.06);
+    color: #e4e4e7;
+}
+
+.ai-tab:focus {
+    background-color: rgba(255, 255, 255, 0.09);
+}
+
+.ai-tab-active {
+    background-color: rgba(73, 195, 209, 0.16);
+    color: #f4f4f5;
+}
+
+.ai-tab-active:hover {
+    background-color: rgba(73, 195, 209, 0.24);
+}
+
+.ai-tab-box {
+    spacing: 5px;
+}
+
+.ai-tab-dot {
+    font-size: 8px;
+}
+
+.ai-tab-label {
+    font-size: 11px;
+    font-weight: 600;
 }
 
 /* -- tool headers ------------------------------------------------------ */
@@ -30,82 +87,105 @@
 
 .ai-tool-name {
     font-size: 13px;
-    font-weight: 700;
+    font-weight: 800;
+    color: #f4f4f5;
 }
 
 .ai-tool-cost {
     font-size: 11px;
     font-weight: 600;
-    color: rgba(160, 160, 170, 0.9);
+    color: #a1a1aa;
 }
 
 /* -- progress rows ------------------------------------------------------ */
 
 .ai-progress-container {
-    padding: 0 4px 4px 4px;
+    padding: 2px 6px 6px 6px;
     spacing: 3px;
 }
 
 .ai-progress-title {
-    font-size: 11px;
-    color: rgba(200, 200, 210, 0.85);
+    font-size: 12px;
+    color: #a1a1aa;
 }
 
 .ai-progress-percent {
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 700;
+    color: #e4e4e7;
+}
+
+/* Teal dot marking a bar sourced from the provider's real limit (live poll)
+ * rather than the local dollar-scaled estimate. */
+.ai-live-badge {
+    font-size: 7px;
+    color: #49c3d1;
+    margin-right: 6px;
 }
 
 .ai-progress-track {
     width: 300px;
-    height: 8px;
-    border-radius: 4px;
-    background-color: rgba(128, 128, 140, 0.22);
-    margin-top: 4px;
-    margin-bottom: 4px;
+    height: 6px;
+    border-radius: 3px;
+    background-color: rgba(255, 255, 255, 0.09);
+    margin-top: 5px;
+    margin-bottom: 5px;
 }
 
 .ai-progress-fill {
-    height: 8px;
-    border-radius: 4px;
+    height: 6px;
+    border-radius: 3px;
     background-gradient-direction: horizontal;
 }
 
-/* Healthy fills wear the tool's brand color (set inline from JS); only the
- * warn/danger severities are styled here so the alert colors stay uniform. */
+/* Healthy fill wears CodexBar's teal; warn/danger take over past 70/90%. */
+.ai-fill-ok {
+    background-gradient-start: #3aa7bf;
+    background-gradient-end: #49c3d1;
+}
 
 .ai-fill-warn {
-    background-gradient-start: #f8c14e;
-    background-gradient-end: #f5822a;
+    background-gradient-start: #f2b13a;
+    background-gradient-end: #f59331;
 }
 
 .ai-fill-danger {
-    background-gradient-start: #f66151;
-    background-gradient-end: #d43030;
+    background-gradient-start: #ff5f57;
+    background-gradient-end: #e0322b;
 }
 
 .ai-progress-subtitle {
     font-size: 10px;
-    color: rgba(160, 160, 170, 0.75);
+    color: #71717a;
 }
 
-/* -- per-model breakdown ------------------------------------------------- */
+/* -- section labels (By model / Cost) ---------------------------------- */
+
+.ai-section-label {
+    font-size: 10px;
+    font-weight: 700;
+    color: #52525b;
+    letter-spacing: 0.05em;
+    padding: 4px 0 0 0;
+}
+
+/* -- per-model breakdown / key-value rows -------------------------------- */
 
 .ai-model-name {
     font-size: 11px;
-    color: rgba(200, 200, 210, 0.85);
+    color: #a1a1aa;
 }
 
 .ai-model-cost {
     font-size: 11px;
     font-weight: 600;
-    color: rgba(160, 160, 170, 0.9);
+    color: #71717a;
 }
 
 /* -- 7-day sparkline ------------------------------------------------------ */
 
 .ai-spark-row {
-    padding: 2px 4px 0 4px;
+    padding: 2px 6px 0 6px;
 }
 
 .ai-spark-col {
@@ -118,13 +198,13 @@
 
 .ai-spark-day {
     font-size: 9px;
-    color: rgba(160, 160, 170, 0.7);
+    color: #71717a;
     margin-top: 3px;
 }
 
 .ai-spark-today {
     font-weight: 700;
-    color: rgba(225, 225, 235, 0.95);
+    color: #e4e4e7;
 }
 
 /* Baseline stub for days with no usage, so the week grid stays visible. */
@@ -132,15 +212,16 @@
     height: 2px;
     margin: 0 2px;
     border-radius: 1px;
-    background-color: rgba(128, 128, 140, 0.25);
+    background-color: rgba(255, 255, 255, 0.10);
 }
 
+/* Fallback single-tool history bar: CodexBar's teal. */
 .ai-spark-bar {
     border-radius: 2px;
     margin: 0 2px;
     background-gradient-direction: vertical;
-    background-gradient-start: #62d09a;
-    background-gradient-end: #4c9be8;
+    background-gradient-start: #49c3d1;
+    background-gradient-end: #2f8fb0;
 }
 
 /* Per-tool segment of a stacked day column; its brand background-color is
@@ -153,5 +234,5 @@
 
 .ai-footer {
     font-size: 10px;
-    color: rgba(160, 160, 170, 0.8);
+    color: #71717a;
 }

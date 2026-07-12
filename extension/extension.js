@@ -48,24 +48,28 @@ const REFRESH_INTERVAL_S = 120;
 // .ai-progress-track width in stylesheet.css).
 const TRACK_WIDTH = 300;
 
+// Weekly window span, for the pace line on a real weekly bar.
+const WEEK_SPAN_S = 7 * 24 * 3600;
+
 // Presentation for known tools. Which tools actually appear is decided by
 // the daemon's snapshot (every tool with recorded usage), so a user with one
 // subscription sees one section and a user with three sees three. Unknown
 // tools (third-party adapters) get a generic style via toolStyle().
 const TOOL_STYLES = {
-    claude_code: {label: 'Claude Code', color: '#ff8866', prefix: 'claude'},
-    gemini_cli: {label: 'agy', color: '#66b3ff', prefix: 'gemini'},
-    codex: {label: 'Codex', color: '#7bd8b0', prefix: 'codex'},
+    claude_code: {label: 'Claude Code', short: 'Claude', color: '#ff8866', prefix: 'claude'},
+    gemini_cli: {label: 'agy', short: 'agy', color: '#66b3ff', prefix: 'gemini'},
+    codex: {label: 'Codex', short: 'Codex', color: '#7bd8b0', prefix: 'codex'},
+    opencode: {label: 'OpenCode', short: 'OpenCode', color: '#e6b34d', prefix: 'opencode'},
 };
 const TOOL_ORDER = Object.keys(TOOL_STYLES);
 
 function toolStyle(id) {
-    return TOOL_STYLES[id] ?? {
-        label: id.split('_')
-            .map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' '),
-        color: '#9a9aa5',
-        prefix: id,
-    };
+    const known = TOOL_STYLES[id];
+    if (known)
+        return {short: known.label, ...known};
+    const label = id.split('_')
+        .map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+    return {label, short: label, color: '#9a9aa5', prefix: id};
 }
 
 function formatTokens(n) {
@@ -96,15 +100,6 @@ function severityClass(pct) {
     if (pct >= 70)
         return 'warn';
     return 'ok';
-}
-
-/** Blend a #rrggbb color toward white by factor f (0..1). */
-function lighten(hex, f) {
-    const n = parseInt(hex.slice(1), 16);
-    const ch = shift => Math.min(255,
-        Math.round(((n >> shift) & 0xff) + (255 - ((n >> shift) & 0xff)) * f));
-    return `#${((ch(16) << 16) | (ch(8) << 8) | ch(0))
-        .toString(16).padStart(6, '0')}`;
 }
 
 /** "at this pace" time-to-limit, from a burn rate in $/hour. */
@@ -170,14 +165,57 @@ function windowText(entry, budget, ratePerHour) {
     return {text: resets, warn: false};
 }
 
+/** Subtitle for a bar driven by the provider's REAL limit: the exact reset
+ * countdown from resets_at. No burn-rate guessing — the % is authoritative,
+ * so the only thing to add is when the provider resets the window. */
+function realWindowText(real) {
+    if (!real || !real.resets_at)
+        return '';
+    const remaining = real.resets_at - Date.now() / 1000;
+    if (remaining <= 0)
+        return _('resetting…');
+    return fmt(_('resets in %s'), spanStr(remaining));
+}
+
+/** 'default_claude_max_20x' -> 'Max 20x'; '' when unknown. Shown top-right of a
+ * provider card like CodexBar's plan badge. */
+function planLabel(tier) {
+    if (!tier)
+        return '';
+    const t = String(tier)
+        .replace(/^default_/, '').replace(/^claude_/, '')
+        .replace(/_/g, ' ').trim();
+    return t.replace(/\b([a-z])/g, (_m, c) => c.toUpperCase());
+}
+
+/** CodexBar-style pace: how the real usage compares to even consumption across
+ * the window. Negative = under the even-pace line (usage will last to reset). */
+function paceText(usedPct, resetsAt, spanSeconds) {
+    if (!(spanSeconds > 0) || !resetsAt)
+        return '';
+    const now = Date.now() / 1000;
+    const elapsed = Math.max(0, Math.min(spanSeconds, spanSeconds - (resetsAt - now)));
+    if (elapsed < spanSeconds * 0.03)
+        return '';  // too early in the window to be meaningful
+    const diff = Math.round(usedPct - elapsed / spanSeconds * 100);
+    return diff <= 0
+        ? fmt(_('pace %s%% · lasts to reset'), diff)
+        : fmt(_('pace +%s%% · running hot'), diff);
+}
+
 const ProgressBarRow = GObject.registerClass(
 class ProgressBarRow extends PopupMenu.PopupBaseMenuItem {
     _init(title, cost, budget, tokens, extra = '', color = null,
-        extraWarn = false) {
+        extraWarn = false, realPct = null) {
         super._init({reactive: false});
 
+        // A provider-real percentage (from a live poller) drives the bar
+        // directly; otherwise fall back to the dollar-scaled estimate.
+        const real = Number.isFinite(realPct);
         let pct = 0;
-        if (budget > 0)
+        if (real)
+            pct = Math.min(100, Math.max(0, realPct));
+        else if (budget > 0)
             pct = Math.min(100, Math.max(0, (cost / budget) * 100));
         const sev = severityClass(pct);
 
@@ -188,14 +226,23 @@ class ProgressBarRow extends PopupMenu.PopupBaseMenuItem {
         });
 
         // Title row: window name left, percentage right (severity-colored).
+        // A teal "live" dot marks a bar sourced from the provider's real
+        // limit rather than the local estimate.
         const titleRow = new St.BoxLayout();
         titleRow.add_child(new St.Label({
             text: title,
             style_class: 'ai-progress-title',
             x_expand: true,
         }));
+        if (real) {
+            titleRow.add_child(new St.Label({
+                text: '●',
+                style_class: 'ai-live-badge',
+                y_align: Clutter.ActorAlign.CENTER,
+            }));
+        }
         titleRow.add_child(new St.Label({
-            text: budget > 0 ? `${Math.round(pct)}%` : formatCost(cost),
+            text: (real || budget > 0) ? `${Math.round(pct)}%` : formatCost(cost),
             style_class: `ai-progress-percent ai-text-${sev}`,
         }));
 
@@ -206,29 +253,29 @@ class ProgressBarRow extends PopupMenu.PopupBaseMenuItem {
         const fillWidth = pct > 0
             ? Math.max(4, Math.round(TRACK_WIDTH * pct / 100))
             : 0;
-        const branded = sev === 'ok' && color;
+        // Healthy fill wears CodexBar's teal (.ai-fill-ok); the warn/danger
+        // severities take over past 70/90%. The tool's brand color lives on
+        // the header dot, so the meters stay uniform like CodexBar's.
         const fill = new St.BoxLayout({
-            style_class: branded
-                ? 'ai-progress-fill'
-                : `ai-progress-fill ai-fill-${sev}`,
+            style_class: `ai-progress-fill ai-fill-${sev}`,
         });
-        let style = `width: ${fillWidth}px;`;
-        if (branded) {
-            style += ` background-gradient-direction: horizontal;` +
-                ` background-gradient-start: ${color};` +
-                ` background-gradient-end: ${lighten(color, 0.25)};`;
-        }
-        fill.set_style(style);
+        fill.set_style(`width: ${fillWidth}px;`);
         track.add_child(fill);
 
         let detail;
         if (cost <= 0 && tokens <= 0 && extra) {
             detail = extra;  // idle window: skip the "$0.00 · 0 tokens" noise
         } else {
-            detail = budget > 0
-                ? fmt(_('%s of %s  ·  %s tokens'),
-                    formatCost(cost), formatCost(budget), formatTokens(tokens))
-                : fmt(_('%s tokens'), formatTokens(tokens));
+            // With a real % the dollar budget is meaningless (the number isn't
+            // derived from it), so show spend + tokens as context, not "of $Y".
+            if (real)
+                detail = fmt(_('%s  ·  %s tokens'),
+                    formatCost(cost), formatTokens(tokens));
+            else
+                detail = budget > 0
+                    ? fmt(_('%s of %s  ·  %s tokens'),
+                        formatCost(cost), formatCost(budget), formatTokens(tokens))
+                    : fmt(_('%s tokens'), formatTokens(tokens));
             if (extra)
                 detail += `  ·  ${extra}`;
         }
@@ -283,6 +330,10 @@ class Indicator extends PanelMenu.Button {
         // diffed to announce "fresh window" when one expires.
         this._lastSessions = new Map();
         this._resetTimerId = 0;
+        // Switcher: which provider tab is open (a tool id). null until the
+        // first snapshot picks the most-pressured tool; persists while the
+        // indicator lives so reopening the menu keeps your place.
+        this._selected = null;
 
         this._rebuildMenu();
         this._initProxy();
@@ -449,11 +500,21 @@ class Indicator extends PanelMenu.Button {
                 ['five_hours', _('Session (5h)'), `${style.prefix}_5h`],
                 ['week', _('Weekly'), `${style.prefix}_weekly`],
             ]) {
-                const budget = this._budget(budgetKey);
-                if (!(budget > 0))
-                    continue;
-                const cost = this._toolData(period, id).cost_usd;
-                const pct = cost / budget * 100;
+                // Alert on the provider's real % when available (more accurate
+                // than the estimate); otherwise fall back to cost/budget.
+                let pct = this._realPct(period, id);
+                let body;
+                if (pct === null) {
+                    const budget = this._budget(budgetKey);
+                    if (!(budget > 0))
+                        continue;
+                    const cost = this._toolData(period, id).cost_usd;
+                    pct = cost / budget * 100;
+                    body = fmt(_('%s of %s used'),
+                        formatCost(cost), formatCost(budget));
+                } else {
+                    body = fmt(_('%s%% used'), Math.round(pct));
+                }
                 const bucket = pct >= 100 ? 3 : pct >= 90 ? 2 : pct >= 70 ? 1 : 0;
                 const key = `${id}:${period}`;
                 const prev = this._alertState.get(key) ?? 0;
@@ -461,8 +522,7 @@ class Indicator extends PanelMenu.Button {
                     Main.notify(
                         fmt(_('%s — %s at %s%%'),
                             style.label, label, Math.round(pct)),
-                        fmt(_('%s of %s used'),
-                            formatCost(cost), formatCost(budget)));
+                        body);
                 }
                 this._alertState.set(key, bucket);
             }
@@ -473,6 +533,13 @@ class Indicator extends PanelMenu.Button {
         const pData = this._snapshot?.[period];
         const tData = pData?.tools?.find(t => t.tool === toolName);
         return tData ?? {cost_usd: 0, total_tokens: 0};
+    }
+
+    /** The provider's real used-% for a window if a live poller supplied it,
+     * else null (caller falls back to the dollar estimate). */
+    _realPct(period, toolName) {
+        const v = this._toolData(period, toolName).real?.used_percent;
+        return Number.isFinite(v) ? v : null;
     }
 
     _budget(key) {
@@ -503,13 +570,16 @@ class Indicator extends PanelMenu.Button {
         let max = null;
         for (const id of this._activeTools()) {
             const prefix = toolStyle(id).prefix;
-            for (const [period, budget] of [
-                ['five_hours', this._budget(`${prefix}_5h`)],
-                ['week', this._budget(`${prefix}_weekly`)],
+            for (const [period, suffix] of [
+                ['five_hours', '_5h'], ['week', '_weekly'],
             ]) {
-                if (!(budget > 0))
-                    continue;
-                const pct = this._toolData(period, id).cost_usd / budget * 100;
+                let pct = this._realPct(period, id);  // provider-real wins
+                if (pct === null) {
+                    const budget = this._budget(`${prefix}${suffix}`);
+                    if (!(budget > 0))
+                        continue;
+                    pct = this._toolData(period, id).cost_usd / budget * 100;
+                }
                 if (max === null || pct > max)
                     max = pct;
             }
@@ -540,6 +610,193 @@ class Indicator extends PanelMenu.Button {
             `ai-panel-label ai-text-${severityClass(pressure)}`;
     }
 
+    /** Provider tab bar: one tab per active tool. Clicking a tab swaps the
+     * detailed card below without growing the popup (CodexBar-style). */
+    _addTabBar(active, sel) {
+        const item = new PopupMenu.PopupBaseMenuItem(
+            {reactive: false, can_focus: false, style_class: 'ai-tabbar-item'});
+        const row = new St.BoxLayout({style_class: 'ai-tabbar', x_expand: true});
+        for (const id of active) {
+            const style = toolStyle(id);
+            const btn = new St.Button({
+                style_class: sel === id ? 'ai-tab ai-tab-active' : 'ai-tab',
+                x_expand: false,
+                can_focus: true,
+            });
+            const box = new St.BoxLayout({style_class: 'ai-tab-box'});
+            box.add_child(new St.Label({
+                text: '●',
+                style: `color: ${style.color};`,
+                style_class: 'ai-tab-dot',
+                y_align: Clutter.ActorAlign.CENTER,
+            }));
+            box.add_child(new St.Label({
+                text: style.short,
+                style_class: 'ai-tab-label',
+                y_align: Clutter.ActorAlign.CENTER,
+            }));
+            btn.set_child(box);
+            btn.connect('clicked', () => {
+                this._selected = id;
+                this._rebuildMenu();
+            });
+            row.add_child(btn);
+        }
+        item.add_child(row);
+        this.menu.addMenuItem(item);
+    }
+
+    /** The tool under the most pressure (real % if available, else estimate) —
+     * the default tab when none is selected yet. */
+    _mostPressuredTool(active) {
+        let best = active[0] ?? null, bestPct = -1;
+        for (const id of active) {
+            const prefix = toolStyle(id).prefix;
+            for (const [period, suffix] of [
+                ['five_hours', '_5h'], ['week', '_weekly'],
+            ]) {
+                let pct = this._realPct(period, id);
+                if (pct === null) {
+                    const b = this._budget(`${prefix}${suffix}`);
+                    pct = b > 0 ? this._toolData(period, id).cost_usd / b * 100 : -1;
+                }
+                if (pct > bestPct) {
+                    bestPct = pct;
+                    best = id;
+                }
+            }
+        }
+        return best;
+    }
+
+    _addSectionLabel(text) {
+        const item = new PopupMenu.PopupBaseMenuItem({reactive: false});
+        item.add_child(new St.Label({
+            text, style_class: 'ai-section-label', x_expand: true,
+        }));
+        this.menu.addMenuItem(item);
+    }
+
+    _addKeyValueRow(label, value) {
+        const row = new PopupMenu.PopupBaseMenuItem({reactive: false});
+        row.add_child(new St.Label({
+            text: label, style_class: 'ai-model-name', x_expand: true,
+        }));
+        row.add_child(new St.Label({text: value, style_class: 'ai-model-cost'}));
+        this.menu.addMenuItem(row);
+    }
+
+    /** One provider's detailed card, CodexBar-style: header with plan tier;
+     * Session + Weekly bars (per-pool for grouped tools, provider-real when a
+     * live poller supplied it, with a pace line); a per-model breakdown (real
+     * per-model caps, else the local cost breakdown); an optional Extra-usage
+     * bar; and today / this-month cost. */
+    _addProviderDetail(id) {
+        const style = toolStyle(id);
+        const week = this._toolData('week', id);
+        const fiveH = this._toolData('five_hours', id);
+        const live = this._snapshot?.live?.[id];
+
+        // Header: dot + name (left), plan tier (or weekly spend) on the right.
+        const header = new PopupMenu.PopupBaseMenuItem({reactive: false});
+        header.add_child(new St.Label({
+            text: '●', style: `color: ${style.color};`,
+            style_class: 'ai-tool-dot', y_align: Clutter.ActorAlign.CENTER,
+        }));
+        header.add_child(new St.Label({
+            text: style.label, style_class: 'ai-tool-name',
+            x_expand: true, y_align: Clutter.ActorAlign.CENTER,
+        }));
+        const tier = planLabel(live?.plan_tier);
+        header.add_child(new St.Label({
+            text: tier || fmt(_('%s / wk'), formatCost(week.cost_usd)),
+            style_class: 'ai-tool-cost', y_align: Clutter.ActorAlign.CENTER,
+        }));
+        this.menu.addMenuItem(header);
+
+        const hourRate = this._toolData('hour', id).cost_usd;
+        const dayRate = this._toolData('day', id).cost_usd / 24;
+        const budget5h = this._budget(`${style.prefix}_5h`);
+        const budgetWk = this._budget(`${style.prefix}_weekly`);
+
+        // Grouped tools (Antigravity: Gemini vs Claude & GPT) get a pair per pool.
+        const fiveGroups = fiveH.groups ?? [];
+        const weekByKey = new Map((week.groups ?? []).map(g => [g.key, g]));
+        if (fiveGroups.length >= 2) {
+            for (const g5 of fiveGroups) {
+                const gw = weekByKey.get(g5.key) ?? {cost_usd: 0, total_tokens: 0};
+                const s = windowText(g5, budget5h, 0);
+                const w = windowText(gw, budgetWk, 0);
+                this.menu.addMenuItem(new ProgressBarRow(
+                    `${_('Session (5h)')} · ${g5.label}`,
+                    g5.cost_usd, budget5h, g5.total_tokens, s.text, style.color, s.warn));
+                this.menu.addMenuItem(new ProgressBarRow(
+                    `${_('Weekly')} · ${g5.label}`,
+                    gw.cost_usd, budgetWk, gw.total_tokens, w.text, style.color, w.warn));
+            }
+        } else {
+            const real5 = fiveH.real, realWk = week.real;
+            const session = windowText(fiveH, budget5h, hourRate);
+            const weekly = windowText(week, budgetWk, dayRate);
+            this.menu.addMenuItem(new ProgressBarRow(
+                _('Session (5h)'), fiveH.cost_usd, budget5h, fiveH.total_tokens,
+                real5 ? realWindowText(real5) : session.text, style.color,
+                real5 ? false : session.warn, real5 ? real5.used_percent : null));
+            // Weekly, with a CodexBar-style pace line once the real % is known.
+            let wkText = realWk ? realWindowText(realWk) : weekly.text;
+            if (realWk) {
+                const p = paceText(realWk.used_percent, realWk.resets_at, WEEK_SPAN_S);
+                if (p)
+                    wkText += `  ·  ${p}`;
+            }
+            this.menu.addMenuItem(new ProgressBarRow(
+                _('Weekly'), week.cost_usd, budgetWk, week.total_tokens,
+                wkText, style.color, realWk ? false : weekly.warn,
+                realWk ? realWk.used_percent : null));
+        }
+
+        // Per-model breakdown: prefer the provider's REAL per-model caps
+        // (Claude's weekly-scoped models, e.g. Opus/Sonnet), rendered as their
+        // own bars; otherwise fall back to the local per-model cost breakdown.
+        const scoped = week.real_scoped ?? [];
+        if (scoped.length) {
+            for (const m of scoped) {
+                this.menu.addMenuItem(new ProgressBarRow(
+                    m.label, 0, 0, 0,
+                    m.resets_at ? realWindowText(m) : '', style.color, false,
+                    m.used_percent));
+            }
+        } else if ((week.models ?? []).length) {
+            this._addSectionLabel(_('By model'));
+            for (const m of week.models)
+                this._addKeyValueRow(
+                    m.model,
+                    `${formatCost(m.cost_usd)}  ·  ${formatTokens(m.total_tokens)}`);
+        }
+
+        // Extra usage (Claude credit overage) — only when the plan enables it.
+        const xu = live?.extra_usage;
+        if (xu?.enabled && Number.isFinite(xu.used_percent)) {
+            const used = Number.isFinite(xu.used_credits) ? xu.used_credits / 100 : 0;
+            const limit = Number.isFinite(xu.monthly_limit) ? xu.monthly_limit / 100 : 0;
+            this.menu.addMenuItem(new ProgressBarRow(
+                _('Extra usage'), 0, 0, 0,
+                limit > 0
+                    ? fmt(_('%s of %s this month'), formatCost(used), formatCost(limit))
+                    : formatCost(used),
+                style.color, false, xu.used_percent));
+        }
+
+        // Cost: today and this month.
+        this._addSectionLabel(_('Cost'));
+        const today = this._toolData('today', id);
+        const month = this._toolData('month', id);
+        this._addKeyValueRow(_('Today'),
+            `${formatCost(today.cost_usd)}  ·  ${formatTokens(today.total_tokens)}`);
+        this._addKeyValueRow(_('This month'),
+            `${formatCost(month.cost_usd)}  ·  ${formatTokens(month.total_tokens)}`);
+    }
+
     _rebuildMenu() {
         this.menu.removeAll();
 
@@ -561,7 +818,7 @@ class Indicator extends PanelMenu.Button {
                 {reactive: false});
             this.menu.addMenuItem(empty);
             const hint = new PopupMenu.PopupMenuItem(
-                _('Use Claude Code, agy or Codex and it will appear here'),
+                _('Use Claude Code, agy, Codex or OpenCode and it will appear here'),
                 {reactive: false});
             hint.label.add_style_class_name('ai-progress-subtitle');
             this.menu.addMenuItem(hint);
@@ -569,98 +826,26 @@ class Indicator extends PanelMenu.Button {
             return;
         }
 
-        active.forEach((id, index) => {
-            if (index > 0)
-                this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
-
-            const style = toolStyle(id);
-            const week = this._toolData('week', id);
-            const fiveH = this._toolData('five_hours', id);
-
-            // Header: colored dot + tool name, weekly spend on the right.
-            const header = new PopupMenu.PopupBaseMenuItem({reactive: false});
-            header.add_child(new St.Label({
-                text: '●',
-                style: `color: ${style.color};`,
-                style_class: 'ai-tool-dot',
-                y_align: Clutter.ActorAlign.CENTER,
-            }));
-            header.add_child(new St.Label({
-                text: style.label,
-                style_class: 'ai-tool-name',
-                x_expand: true,
-                y_align: Clutter.ActorAlign.CENTER,
-            }));
-            header.add_child(new St.Label({
-                text: fmt(_('%s / wk'), formatCost(week.cost_usd)),
-                style_class: 'ai-tool-cost',
-                y_align: Clutter.ActorAlign.CENTER,
-            }));
-            this.menu.addMenuItem(header);
-
-            // Burn rates from the short rolling windows (absent on old daemons).
-            const hourRate = this._toolData('hour', id).cost_usd;
-            const dayRate = this._toolData('day', id).cost_usd / 24;
-
-            const budget5h = this._budget(`${style.prefix}_5h`);
-            const budgetWk = this._budget(`${style.prefix}_weekly`);
-            // Both windows are anchored to first use, so each bar's tail
-            // counts down to its real reset (burn-rate ETA only appears if
-            // the limit would be hit before then, tinted amber).
-            //
-            // Tools that meter independent model-family pools (Antigravity:
-            // Gemini vs Claude & GPT) get one bar pair per pool, mirroring
-            // the provider's own quota screen.
-            const fiveGroups = fiveH.groups ?? [];
-            const weekByKey = new Map((week.groups ?? []).map(g => [g.key, g]));
-            if (fiveGroups.length >= 2) {
-                for (const g5 of fiveGroups) {
-                    const gw = weekByKey.get(g5.key) ??
-                        {cost_usd: 0, total_tokens: 0};
-                    // No per-pool burn rate: rate 0 keeps projections off.
-                    const s = windowText(g5, budget5h, 0);
-                    const w = windowText(gw, budgetWk, 0);
-                    this.menu.addMenuItem(new ProgressBarRow(
-                        `${_('Session (5h)')} · ${g5.label}`,
-                        g5.cost_usd, budget5h, g5.total_tokens,
-                        s.text, style.color, s.warn));
-                    this.menu.addMenuItem(new ProgressBarRow(
-                        `${_('Weekly')} · ${g5.label}`,
-                        gw.cost_usd, budgetWk, gw.total_tokens,
-                        w.text, style.color, w.warn));
-                }
-            } else {
-                const session = windowText(fiveH, budget5h, hourRate);
-                const weekly = windowText(week, budgetWk, dayRate);
-                this.menu.addMenuItem(new ProgressBarRow(
-                    _('Session (5h)'), fiveH.cost_usd, budget5h,
-                    fiveH.total_tokens, session.text, style.color,
-                    session.warn));
-                this.menu.addMenuItem(new ProgressBarRow(
-                    _('Weekly'), week.cost_usd, budgetWk, week.total_tokens,
-                    weekly.text, style.color, weekly.warn));
-            }
-
-            // Top models this week, tucked into a collapsible row.
-            const models = week.models ?? [];
-            if (models.length) {
-                const sub = new PopupMenu.PopupSubMenuMenuItem(_('By model'));
-                for (const m of models) {
-                    const row = new PopupMenu.PopupBaseMenuItem({reactive: false});
-                    row.add_child(new St.Label({
-                        text: m.model,
-                        style_class: 'ai-model-name',
-                        x_expand: true,
-                    }));
-                    row.add_child(new St.Label({
-                        text: `${formatCost(m.cost_usd)}  ·  ${formatTokens(m.total_tokens)}`,
-                        style_class: 'ai-model-cost',
-                    }));
-                    sub.menu.addMenuItem(row);
-                }
-                this.menu.addMenuItem(sub);
-            }
-        });
+        // Layout: "switcher" (default) shows a provider tab bar with one card
+        // at a time — the compact CodexBar-style view; "stacked" lists every
+        // provider's full section at once (the original behaviour).
+        const layout = this._snapshot.ui?.layout ?? 'switcher';
+        if (layout === 'stacked') {
+            active.forEach((id, index) => {
+                if (index > 0)
+                    this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+                this._addProviderDetail(id);
+            });
+        } else {
+            // Switcher: a tab per tool, one detailed card at a time. Default to
+            // the most-pressured tool; keep the user's pick once they choose one.
+            let sel = this._selected;
+            if (!active.includes(sel))
+                sel = this._selected = this._mostPressuredTool(active);
+            this._addTabBar(active, sel);
+            this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+            this._addProviderDetail(sel);
+        }
 
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
         this._addSparkline();
@@ -673,10 +858,10 @@ class Indicator extends PanelMenu.Button {
             style_class: 'ai-footer',
             x_expand: true,
         }));
-        const updated = new Date((this._snapshot.updated ?? 0) * 1000);
+        const updatedAgo = Math.max(
+            0, Date.now() / 1000 - (this._snapshot.updated ?? 0));
         footer.add_child(new St.Label({
-            text: fmt(_('Synced %s'),
-                `${updated.getHours()}:${String(updated.getMinutes()).padStart(2, '0')}`),
+            text: fmt(_('updated %s ago'), spanStr(updatedAgo)),
             style_class: 'ai-footer',
         }));
         this.menu.addMenuItem(footer);

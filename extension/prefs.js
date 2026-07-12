@@ -107,6 +107,21 @@ export default class AITokenMonitorPrefs extends ExtensionPreferences {
         });
         group.add(panelRow);
 
+        const layoutModes = ['switcher', 'stacked'];
+        const layoutRow = new Adw.ComboRow({
+            title: _('Popup layout'),
+            subtitle: _('Switcher: provider tabs, one card at a time · Stacked: all providers at once'),
+            model: Gtk.StringList.new([_('Switcher'), _('Stacked')]),
+        });
+        const curLayout = layoutModes.indexOf(ui.layout);
+        layoutRow.selected = curLayout >= 0 ? curLayout : 0;
+        layoutRow.connect('notify::selected', () => {
+            proxy.SetSettingsRemote(JSON.stringify({
+                ui: {layout: layoutModes[layoutRow.selected]},
+            }), () => {});
+        });
+        group.add(layoutRow);
+
         const alertsRow = new Adw.SwitchRow({
             title: _('Limit notifications'),
             subtitle: _('Notify when a bar crosses 70%, 90% or 100%'),
