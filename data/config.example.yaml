@@ -80,6 +80,9 @@ budgets:
   weekly: 0.0
   monthly: 0.0
   # claude_weekly: 1500
+  # OpenCode Go meters a monthly limit; set a $ ceiling to turn its Monthly
+  # bar into a percentage (otherwise it shows the calendar-month spend):
+  # opencode_monthly: 20
 
 # USD per 1 million tokens. Rules are evaluated top to bottom with fnmatch;
 # the first match wins. VERIFY these against your providers' current pricing.

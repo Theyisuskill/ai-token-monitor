@@ -352,10 +352,10 @@ class Indicator extends PanelMenu.Button {
         // diffed to announce "fresh window" when one expires.
         this._lastSessions = new Map();
         this._resetTimerId = 0;
-        // Switcher: which provider tab is open (a tool id). null until the
-        // first snapshot picks the most-pressured tool; persists while the
-        // indicator lives so reopening the menu keeps your place.
-        this._selected = null;
+        // Switcher: which tab is open — 'summary' (unified KPI view) or a tool
+        // id (that provider's detailed card). Persists while the indicator
+        // lives so reopening the menu keeps your place.
+        this._selected = 'summary';
 
         this._rebuildMenu();
         this._initProxy();
@@ -632,29 +632,27 @@ class Indicator extends PanelMenu.Button {
             `ai-panel-label ai-text-${severityClass(pressure)}`;
     }
 
-    /** Provider tab bar: one tab per active tool. Clicking a tab swaps the
-     * detailed card below without growing the popup (CodexBar-style). */
+    /** Tab bar: a "Summary" KPI tab, then one tab per active tool. Clicking a
+     * tab swaps the card below without growing the popup (CodexBar-style). */
     _addTabBar(active, sel) {
         const item = new PopupMenu.PopupBaseMenuItem(
             {reactive: false, can_focus: false, style_class: 'ai-tabbar-item'});
         const row = new St.BoxLayout({style_class: 'ai-tabbar', x_expand: true});
-        for (const id of active) {
-            const style = toolStyle(id);
+        const addTab = (id, label, dotColor) => {
             const btn = new St.Button({
                 style_class: sel === id ? 'ai-tab ai-tab-active' : 'ai-tab',
                 x_expand: false,
                 can_focus: true,
             });
             const box = new St.BoxLayout({style_class: 'ai-tab-box'});
+            if (dotColor) {
+                box.add_child(new St.Label({
+                    text: '●', style: `color: ${dotColor};`,
+                    style_class: 'ai-tab-dot', y_align: Clutter.ActorAlign.CENTER,
+                }));
+            }
             box.add_child(new St.Label({
-                text: '●',
-                style: `color: ${style.color};`,
-                style_class: 'ai-tab-dot',
-                y_align: Clutter.ActorAlign.CENTER,
-            }));
-            box.add_child(new St.Label({
-                text: style.short,
-                style_class: 'ai-tab-label',
+                text: label, style_class: 'ai-tab-label',
                 y_align: Clutter.ActorAlign.CENTER,
             }));
             btn.set_child(box);
@@ -663,32 +661,70 @@ class Indicator extends PanelMenu.Button {
                 this._rebuildMenu();
             });
             row.add_child(btn);
-        }
+        };
+        addTab('summary', _('Summary'), null);
+        for (const id of active)
+            addTab(id, toolStyle(id).short, toolStyle(id).color);
         item.add_child(row);
         this.menu.addMenuItem(item);
     }
 
-    /** The tool under the most pressure (real % if available, else estimate) —
-     * the default tab when none is selected yet. */
-    _mostPressuredTool(active) {
-        let best = active[0] ?? null, bestPct = -1;
+    /** The single most-pressured window across all tools (real % preferred),
+     * with which tool/window and its reset — for the Summary "highest limit". */
+    _topPressure(active) {
+        let best = null, bestPct = -1;
         for (const id of active) {
             const prefix = toolStyle(id).prefix;
-            for (const [period, suffix] of [
-                ['five_hours', '_5h'], ['week', '_weekly'],
+            for (const [period, suffix, label] of [
+                ['five_hours', '_5h', _('Session (5h)')],
+                ['week', '_weekly', _('Weekly')],
             ]) {
+                const entry = this._toolData(period, id);
                 let pct = this._realPct(period, id);
+                let resets = entry.real?.resets_at;
                 if (pct === null) {
                     const b = this._budget(`${prefix}${suffix}`);
-                    pct = b > 0 ? this._toolData(period, id).cost_usd / b * 100 : -1;
+                    if (!(b > 0))
+                        continue;
+                    pct = entry.cost_usd / b * 100;
+                    resets = entry.resets_at;
                 }
                 if (pct > bestPct) {
                     bestPct = pct;
-                    best = id;
+                    best = {id, label, pct, resets_at: resets};
                 }
             }
         }
         return best;
+    }
+
+    /** Summary tab: cross-provider KPIs (spend today/week/month), the single
+     * most-pressured limit, and the active providers — a unified glance that
+     * doesn't repeat each tool's window bars. The 7-day sparkline + footer are
+     * added after this by _rebuildMenu. */
+    _addSummary(active) {
+        const totals = p => this._snapshot?.[p]?.totals ?? {cost_usd: 0, total_tokens: 0};
+        const spend = (label, p) => this._addKeyValueRow(label,
+            `${formatCost(totals(p).cost_usd)}  ·  ${formatTokens(totals(p).total_tokens)}`);
+
+        this._addSectionLabel(_('Spend · all providers'));
+        spend(_('Today'), 'today');
+        spend(_('This week'), 'week');
+        spend(_('This month'), 'month');
+
+        const top = this._topPressure(active);
+        if (top) {
+            this._addSectionLabel(_('Highest limit'));
+            const s = toolStyle(top.id);
+            this.menu.addMenuItem(new ProgressBarRow(
+                `${s.label} · ${top.label}`, 0, 0, 0,
+                top.resets_at ? realWindowText({resets_at: top.resets_at}) : '',
+                s.color, false, top.pct));
+        }
+
+        this._addSectionLabel(_('Providers'));
+        this._addKeyValueRow(fmt(_('%s active'), active.length),
+            active.map(id => toolStyle(id).short).join(', '));
     }
 
     _addSectionLabel(text) {
@@ -804,6 +840,19 @@ class Indicator extends PanelMenu.Button {
                 _('Weekly'), week.cost_usd, budgetWk, week.total_tokens,
                 wkText, style.color, realWk ? false : weekly.warn,
                 realWk ? realWk.used_percent : null));
+
+            // Monthly window — for plans that also meter a monthly limit, like
+            // OpenCode Go (Continuous / Weekly / Monthly). The provider's real
+            // monthly % lives behind a login, so this shows the calendar-month
+            // spend, scaled by an optional budgets.<prefix>_monthly if set.
+            const budgetMo = this._budget(`${style.prefix}_monthly`);
+            if (id === 'opencode' || budgetMo > 0) {
+                const month = this._toolData('month', id);
+                this.menu.addMenuItem(new ProgressBarRow(
+                    _('Monthly'), month.cost_usd, budgetMo, month.total_tokens,
+                    budgetMo > 0 ? '' : _('this calendar month'),
+                    style.color, false));
+            }
         }
 
         // Per-model breakdown: prefer the provider's REAL per-model caps
@@ -890,14 +939,17 @@ class Indicator extends PanelMenu.Button {
                 this._addProviderDetail(id);
             });
         } else {
-            // Switcher: a tab per tool, one detailed card at a time. Default to
-            // the most-pressured tool; keep the user's pick once they choose one.
+            // Switcher: a Summary KPI tab plus one card per tool. Default to
+            // Summary; keep the user's pick once they choose a tab.
             let sel = this._selected;
-            if (!active.includes(sel))
-                sel = this._selected = this._mostPressuredTool(active);
+            if (sel !== 'summary' && !active.includes(sel))
+                sel = this._selected = 'summary';
             this._addTabBar(active, sel);
             this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
-            this._addProviderDetail(sel);
+            if (sel === 'summary')
+                this._addSummary(active);
+            else
+                this._addProviderDetail(sel);
         }
 
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
