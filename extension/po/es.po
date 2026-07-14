@@ -48,6 +48,12 @@ msgstr "límites en vivo no disponibles: %s"
 msgid "Links"
 msgstr "Enlaces"
 
+msgid "≈ %s at close"
+msgstr "≈ %s al cierre"
+
+msgid "This week · by provider"
+msgstr "Esta semana · por proveedor"
+
 msgid "dashboard"
 msgstr "panel"
 

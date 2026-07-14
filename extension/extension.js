@@ -190,6 +190,13 @@ function windowText(entry, budget, ratePerHour) {
 /** Subtitle for a bar driven by the provider's REAL limit: the exact reset
  * countdown from resets_at. No burn-rate guessing — the % is authoritative,
  * so the only thing to add is when the provider resets the window. */
+/** Local-time YYYY-MM-DD, matching the daemon's daily_series() keys. */
+function localDayKey(date) {
+    return `${date.getFullYear()}-` +
+        `${String(date.getMonth() + 1).padStart(2, '0')}-` +
+        `${String(date.getDate()).padStart(2, '0')}`;
+}
+
 function realWindowText(real) {
     if (!real || !real.resets_at)
         return '';
@@ -244,9 +251,14 @@ function paceText(usedPct, resetsAt, spanSeconds) {
 
 const ProgressBarRow = GObject.registerClass(
 class ProgressBarRow extends PopupMenu.PopupBaseMenuItem {
-    _init(title, cost, budget, tokens, extra = '', color = null,
-        extraWarn = false, realPct = null, realStale = false, realDot = true) {
-        super._init({reactive: false});
+    /** opts: {warn, realPct, realStale, realDot, onActivate}. onActivate
+     * makes the row clickable and runs INSTEAD of the default item
+     * activation, so the menu stays open (tab navigation, not an action). */
+    _init(title, cost, budget, tokens, extra = '', color = null, opts = {}) {
+        const {warn: extraWarn = false, realPct = null, realStale = false,
+            realDot = true, onActivate = null} = opts;
+        super._init({reactive: !!onActivate, can_focus: !!onActivate});
+        this._onActivate = onActivate;
 
         // A provider-real percentage (from a live poller) drives the bar
         // directly; otherwise fall back to the dollar-scaled estimate.
@@ -350,6 +362,14 @@ class ProgressBarRow extends PopupMenu.PopupBaseMenuItem {
         vbox.add_child(track);
         vbox.add_child(subtitle);
         this.add_child(vbox);
+    }
+
+    activate(event) {
+        if (this._onActivate) {
+            this._onActivate();
+            return;  // skip itemActivated: keep the menu open
+        }
+        super.activate(event);
     }
 });
 
@@ -745,8 +765,30 @@ class Indicator extends PanelMenu.Button {
         this.menu.addMenuItem(item);
     }
 
+    /** Week-over-week spend change in %: the last 7 calendar days vs the 7
+     * before them, from the daemon's 14-day daily series. Null until the
+     * previous week has any spend to compare against. */
+    _weekDelta() {
+        const byDay = new Map(
+            (this._snapshot?.daily ?? []).map(d => [d.day, d.cost_usd ?? 0]));
+        if (!byDay.size)
+            return null;
+        const dayCost = ago =>
+            byDay.get(localDayKey(new Date(Date.now() - ago * 86400000))) ?? 0;
+        let cur = 0, prev = 0;
+        for (let i = 0; i < 7; i++)
+            cur += dayCost(i);
+        for (let i = 7; i < 14; i++)
+            prev += dayCost(i);
+        if (!(prev > 0))
+            return null;
+        return (cur - prev) / prev * 100;
+    }
+
     /** A tool's most-pressured window (real % preferred): {label, pct,
-     * resets_at, real} — one Summary "Limits" row / the panel's pick. */
+     * resets_at, real, realBlock, cost, tokens}. Tools with no real % and no
+     * budgeted window (OpenCode) fall back to a cost-only weekly entry so
+     * every provider still gets a Summary "Limits" row. */
     _worstWindow(id) {
         const prefix = toolStyle(id).prefix;
         let best = null;
@@ -757,7 +799,7 @@ class Indicator extends PanelMenu.Button {
             const entry = this._toolData(period, id);
             let pct = this._realPct(period, id);
             let resets = entry.real?.resets_at;
-            const real = pct !== null;
+            const realBlock = pct !== null ? entry.real : null;
             if (pct === null) {
                 const b = this._budget(`${prefix}${suffix}`);
                 if (!(b > 0))
@@ -765,18 +807,27 @@ class Indicator extends PanelMenu.Button {
                 pct = entry.cost_usd / b * 100;
                 resets = entry.resets_at;
             }
-            if (!best || pct > best.pct)
-                best = {label, pct, resets_at: resets, real};
+            if (!best || pct > best.pct) {
+                best = {label, pct, resets_at: resets, real: !!realBlock,
+                    realBlock, cost: entry.cost_usd, tokens: entry.total_tokens};
+            }
+        }
+        if (!best) {
+            const entry = this._toolData('week', id);
+            best = {label: _('Weekly'), pct: null, resets_at: entry.resets_at,
+                real: false, realBlock: null,
+                cost: entry.cost_usd, tokens: entry.total_tokens};
         }
         return best;
     }
 
-    /** The single most-pressured window across all tools. */
+    /** The single most-pressured window across all tools (cost-only rows,
+     * which have no %, never win). */
     _topPressure(active) {
         let top = null;
         for (const id of active) {
             const w = this._worstWindow(id);
-            if (w && (!top || w.pct > top.pct))
+            if (w.pct !== null && (!top || w.pct > top.pct))
                 top = {id, ...w};
         }
         return top;
@@ -788,37 +839,122 @@ class Indicator extends PanelMenu.Button {
      * added after this by _rebuildMenu. */
     _addSummary(active) {
         const totals = p => this._snapshot?.[p]?.totals ?? {cost_usd: 0, total_tokens: 0};
-        const spend = (label, p) => this._addKeyValueRow(label,
-            `${formatCost(totals(p).cost_usd)}  ·  ${formatTokens(totals(p).total_tokens)}`);
+        const spend = (label, p, note = '', noteClass = undefined) =>
+            this._addKeyValueRow(label,
+                `${formatCost(totals(p).cost_usd)}  ·  ${formatTokens(totals(p).total_tokens)}`,
+                note, noteClass);
 
         this._addSectionLabel(_('Spend · all providers'));
         spend(_('Today'), 'today');
-        spend(_('This week'), 'week');
-        spend(_('This month'), 'month');
+
+        // Week-over-week trend (up = spending more = amber) and a simple
+        // linear month-end projection give the raw totals some context.
+        const delta = this._weekDelta();
+        spend(_('This week'), 'week',
+            delta === null
+                ? '' : `${delta >= 0 ? '↑' : '↓'}${Math.abs(Math.round(delta))}%`,
+            delta !== null && delta >= 0
+                ? 'ai-kv-note ai-text-warn' : 'ai-kv-note ai-delta-down');
+        const now = new Date();
+        const dayOfMonth = now.getDate();
+        const daysInMonth =
+            new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+        const monthCost = totals('month').cost_usd;
+        spend(_('This month'), 'month',
+            dayOfMonth >= 3 && monthCost > 0
+                ? fmt(_('≈ %s at close'),
+                    formatCost(monthCost / dayOfMonth * daysInMonth))
+                : '');
 
         // One compact bar per provider — its most-pressured window — sorted
-        // most-critical first. The teal live dot only marks provider-real %.
+        // most-critical first (cost-only rows land last). The teal live dot
+        // only marks provider-real %; clicking a row opens that provider's
+        // tab without closing the popup.
         const limits = active
             .map(id => ({id, w: this._worstWindow(id)}))
-            .filter(r => r.w)
-            .sort((a, b) => b.w.pct - a.w.pct);
+            .sort((a, b) => (b.w.pct ?? -1) - (a.w.pct ?? -1));
         if (limits.length) {
             this._addSectionLabel(_('Limits'));
             for (const {id, w} of limits) {
                 const s = toolStyle(id);
-                const stale = !!this._snapshot?.live?.[id]?.stale;
+                const liveInfo = this._snapshot?.live?.[id];
                 this.menu.addMenuItem(new ProgressBarRow(
-                    `${s.short} · ${w.label}`, 0, 0, 0,
-                    w.resets_at ? realWindowText({resets_at: w.resets_at}) : '',
-                    s.color, false, w.pct, stale, w.real));
+                    `${s.short} · ${w.label}`, w.cost ?? 0, 0, w.tokens ?? 0,
+                    w.realBlock
+                        ? realDetailText(w.realBlock, liveInfo)
+                        : w.resets_at
+                            ? realWindowText({resets_at: w.resets_at}) : '',
+                    s.color, {
+                        warn: !!w.realBlock?.depletes_at,
+                        realPct: w.pct,
+                        realStale: !!liveInfo?.stale,
+                        realDot: w.real,
+                        onActivate: () => {
+                            this._selected = id;
+                            this._rebuildMenu();
+                        },
+                    }));
             }
         }
 
-        this._addSectionLabel(_('Providers'));
-        this._addKeyValueRow(fmt(_('%s active'), active.length),
-            active.map(id => toolStyle(id).short).join(', '));
-
+        this._addSpendSplit(active);
         this._addLinksSection(active);
+    }
+
+    /** Thin stacked bar of the rolling week's spend by provider (brand
+     * colors) with an icon + amount legend — who is eating the money. */
+    _addSpendSplit(active) {
+        const split = active
+            .map(id => ({id, cost: this._toolData('week', id).cost_usd}))
+            .filter(r => r.cost > 0)
+            .sort((a, b) => b.cost - a.cost);
+        if (!split.length)
+            return;
+        const total = split.reduce((sum, r) => sum + r.cost, 0);
+        this._addSectionLabel(_('This week · by provider'));
+
+        const item = new PopupMenu.PopupBaseMenuItem({reactive: false});
+        const vbox = new St.BoxLayout({
+            vertical: true, x_expand: true,
+            style_class: 'ai-progress-container',
+        });
+        const track = new St.BoxLayout({style_class: 'ai-progress-track'});
+        const widths = split.map(r =>
+            Math.max(2, Math.round(TRACK_WIDTH * r.cost / total)));
+        widths[0] += TRACK_WIDTH - widths.reduce((a, b) => a + b, 0);
+        split.forEach((r, i) => {
+            const seg = new St.BoxLayout({style_class: 'ai-split-seg'});
+            // St doesn't clip children by the parent's radius, so round only
+            // the outer corners of the first/last segment.
+            const l = i === 0 ? 3 : 0;
+            const rr = i === split.length - 1 ? 3 : 0;
+            seg.set_style(`background-color: ${toolStyle(r.id).color}; ` +
+                `width: ${widths[i]}px; ` +
+                `border-radius: ${l}px ${rr}px ${rr}px ${l}px;`);
+            track.add_child(seg);
+        });
+
+        const legend = new St.BoxLayout({style_class: 'ai-legend'});
+        for (const r of split) {
+            const s = toolStyle(r.id);
+            const cell = new St.BoxLayout({style_class: 'ai-legend-cell'});
+            cell.add_child(this._brandIcon(r.id, 'ai-tab-icon', s.color) ??
+                new St.Label({
+                    text: '●', style: `color: ${s.color};`,
+                    style_class: 'ai-tab-dot',
+                    y_align: Clutter.ActorAlign.CENTER,
+                }));
+            cell.add_child(new St.Label({
+                text: formatCost(r.cost), style_class: 'ai-legend-label',
+                y_align: Clutter.ActorAlign.CENTER,
+            }));
+            legend.add_child(cell);
+        }
+
+        vbox.add_child(track);
+        vbox.add_child(legend);
+        item.add_child(vbox);
+        this.menu.addMenuItem(item);
     }
 
     _addSectionLabel(text) {
@@ -829,12 +965,18 @@ class Indicator extends PanelMenu.Button {
         this.menu.addMenuItem(item);
     }
 
-    _addKeyValueRow(label, value) {
+    _addKeyValueRow(label, value, note = '', noteClass = 'ai-kv-note') {
         const row = new PopupMenu.PopupBaseMenuItem({reactive: false});
         row.add_child(new St.Label({
             text: label, style_class: 'ai-model-name', x_expand: true,
         }));
         row.add_child(new St.Label({text: value, style_class: 'ai-model-cost'}));
+        if (note) {
+            row.add_child(new St.Label({
+                text: note, style_class: noteClass,
+                y_align: Clutter.ActorAlign.CENTER,
+            }));
+        }
         this.menu.addMenuItem(row);
     }
 
@@ -945,15 +1087,19 @@ class Indicator extends PanelMenu.Button {
                 this.menu.addMenuItem(new ProgressBarRow(
                     `${_('Session (5h)')} · ${g5.label}`,
                     g5.cost_usd, budget5h, g5.total_tokens,
-                    r5 ? realDetailText(r5, live) : s.text, style.color,
-                    r5 ? !!r5.depletes_at : s.warn,
-                    r5 ? r5.used_percent : null, stale));
+                    r5 ? realDetailText(r5, live) : s.text, style.color, {
+                        warn: r5 ? !!r5.depletes_at : s.warn,
+                        realPct: r5 ? r5.used_percent : null,
+                        realStale: stale,
+                    }));
                 this.menu.addMenuItem(new ProgressBarRow(
                     `${_('Weekly')} · ${g5.label}`,
                     gw.cost_usd, budgetWk, gw.total_tokens,
-                    rw ? realDetailText(rw, live) : w.text, style.color,
-                    rw ? !!rw.depletes_at : w.warn,
-                    rw ? rw.used_percent : null, stale));
+                    rw ? realDetailText(rw, live) : w.text, style.color, {
+                        warn: rw ? !!rw.depletes_at : w.warn,
+                        realPct: rw ? rw.used_percent : null,
+                        realStale: stale,
+                    }));
             }
         } else {
             const real5 = fiveH.real, realWk = week.real;
@@ -961,9 +1107,11 @@ class Indicator extends PanelMenu.Button {
             const weekly = windowText(week, budgetWk, dayRate);
             this.menu.addMenuItem(new ProgressBarRow(
                 _('Session (5h)'), fiveH.cost_usd, budget5h, fiveH.total_tokens,
-                real5 ? realDetailText(real5, live) : session.text, style.color,
-                real5 ? !!real5.depletes_at : session.warn,
-                real5 ? real5.used_percent : null, stale));
+                real5 ? realDetailText(real5, live) : session.text, style.color, {
+                    warn: real5 ? !!real5.depletes_at : session.warn,
+                    realPct: real5 ? real5.used_percent : null,
+                    realStale: stale,
+                }));
             // Weekly, with a CodexBar-style pace line once the real % is known.
             let wkText = realWk ? realDetailText(realWk, live) : weekly.text;
             let wkWarn = realWk ? !!realWk.depletes_at : weekly.warn;
@@ -976,8 +1124,11 @@ class Indicator extends PanelMenu.Button {
             }
             this.menu.addMenuItem(new ProgressBarRow(
                 _('Weekly'), week.cost_usd, budgetWk, week.total_tokens,
-                wkText, style.color, wkWarn,
-                realWk ? realWk.used_percent : null, stale));
+                wkText, style.color, {
+                    warn: wkWarn,
+                    realPct: realWk ? realWk.used_percent : null,
+                    realStale: stale,
+                }));
 
             // Monthly window — for plans that also meter a monthly limit, like
             // OpenCode Go (Continuous / Weekly / Monthly). The provider's real
@@ -989,7 +1140,7 @@ class Indicator extends PanelMenu.Button {
                 this.menu.addMenuItem(new ProgressBarRow(
                     _('Monthly'), month.cost_usd, budgetMo, month.total_tokens,
                     budgetMo > 0 ? '' : _('this calendar month'),
-                    style.color, false));
+                    style.color));
             }
         }
 
@@ -1001,8 +1152,8 @@ class Indicator extends PanelMenu.Button {
             for (const m of scoped) {
                 this.menu.addMenuItem(new ProgressBarRow(
                     m.label, 0, 0, 0,
-                    m.resets_at ? realWindowText(m) : '', style.color, false,
-                    m.used_percent, stale));
+                    m.resets_at ? realWindowText(m) : '', style.color,
+                    {realPct: m.used_percent, realStale: stale}));
             }
         } else if ((week.models ?? []).length) {
             this._addSectionLabel(_('By model'));
@@ -1022,7 +1173,7 @@ class Indicator extends PanelMenu.Button {
                 limit > 0
                     ? fmt(_('%s of %s this month'), formatCost(used), formatCost(limit))
                     : formatCost(used),
-                style.color, false, xu.used_percent));
+                style.color, {realPct: xu.used_percent}));
         }
 
         // Cost: today and this month.
@@ -1099,13 +1250,16 @@ class Indicator extends PanelMenu.Button {
 
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
         this._addSparkline();
-        const today = this._snapshot.today?.totals?.cost_usd ?? 0;
-        const month = this._snapshot.month?.totals?.cost_usd ?? 0;
+        // Footer: poller health on the left (only when something is failing —
+        // the spend numbers already live in the Summary KPIs), update age on
+        // the right.
+        const failing = Object.entries(this._snapshot.live ?? {})
+            .filter(([, v]) => v?.status && v.status !== 'ok')
+            .map(([tool, v]) => `${toolStyle(tool).short}: ${v.status}`);
         const footer = new PopupMenu.PopupBaseMenuItem({reactive: false});
         footer.add_child(new St.Label({
-            text: fmt(_('Today %s  ·  Month %s'),
-                formatCost(today), formatCost(month)),
-            style_class: 'ai-footer',
+            text: failing.length ? `⚠ ${failing.join('  ·  ')}` : '',
+            style_class: 'ai-footer ai-text-warn',
             x_expand: true,
         }));
         const updatedAgo = Math.max(
@@ -1142,10 +1296,7 @@ class Indicator extends PanelMenu.Button {
         const days = [];
         for (let i = 6; i >= 0; i--) {
             const date = new Date(Date.now() - i * 86400000);
-            const key = `${date.getFullYear()}-` +
-                `${String(date.getMonth() + 1).padStart(2, '0')}-` +
-                `${String(date.getDate()).padStart(2, '0')}`;
-            days.push({date, data: byDay.get(key), today: i === 0});
+            days.push({date, data: byDay.get(localDayKey(date)), today: i === 0});
         }
         const max = Math.max(...days.map(d => d.data?.cost_usd ?? 0), 0.01);
         const tools = this._activeTools();
@@ -1156,6 +1307,15 @@ class Indicator extends PanelMenu.Button {
             style_class: 'ai-progress-title',
             x_expand: true,
         }));
+        const delta = this._weekDelta();
+        if (delta !== null) {
+            title.add_child(new St.Label({
+                text: `${delta >= 0 ? '↑' : '↓'}${Math.abs(Math.round(delta))}%   `,
+                style_class: delta >= 0
+                    ? 'ai-progress-subtitle ai-text-warn'
+                    : 'ai-progress-subtitle ai-delta-down',
+            }));
+        }
         title.add_child(new St.Label({
             text: fmt(_('peak %s / day'), formatCost(max)),
             style_class: 'ai-progress-subtitle',

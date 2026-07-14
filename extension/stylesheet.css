@@ -29,6 +29,37 @@
     color: #ff5f57;
 }
 
+/* Downward spend trend (spending less): CodexBar teal. */
+.ai-delta-down {
+    color: #49c3d1;
+}
+
+/* Small right-side context note on a key/value row (Δ%, month projection). */
+.ai-kv-note {
+    font-size: 10px;
+    color: #71717a;
+    margin-left: 8px;
+}
+
+/* One provider's slice of the stacked week-spend bar (colored inline). */
+.ai-split-seg {
+    height: 6px;
+}
+
+/* Icon + amount legend under the stacked spend bar. */
+.ai-legend {
+    margin-top: 2px;
+}
+
+.ai-legend-cell {
+    margin-right: 14px;
+}
+
+.ai-legend-label {
+    font-size: 10px;
+    color: #a1a1aa;
+}
+
 /* Live-poller failure note under a provider header (bars are estimates). */
 .ai-live-status {
     font-size: 10px;
