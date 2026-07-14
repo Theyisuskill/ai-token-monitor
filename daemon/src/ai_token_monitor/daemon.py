@@ -471,7 +471,9 @@ class Daemon:
             "today": self.summary("today"),
             "week": week,
             "month": self.summary("month"),
-            "daily": self.store.daily_series(time.time() - 7 * 86400.0),
+            # 14 days: the sparkline renders the last 7, the previous 7 feed
+            # the Summary's week-over-week spend delta.
+            "daily": self.store.daily_series(time.time() - 14 * 86400.0),
             "budgets": self._resolved_budgets(),
             "tools": self.store.tools_seen(),
             "ui": self.config.ui,
