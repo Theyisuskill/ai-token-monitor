@@ -2,7 +2,7 @@
 %global dbus_name io.github.theyisuskill.AITokenMonitor
 
 Name:           ai-token-monitor
-Version:        0.3.0
+Version:        0.4.0
 Release:        1%{?dist}
 Summary:        Unified token-usage monitor for local AI CLI tools
 License:        GPL-3.0-or-later
@@ -81,6 +81,15 @@ install -pm0644 extension/extension.js extension/metadata.json \
 %{_datadir}/gnome-shell/extensions/%{ext_uuid}/
 
 %changelog
+* Tue Jul 14 2026 theyisuskill <theyisuskill@gmail.com> - 0.4.0-1
+- Summary-centric popup rework: KPI context, clickable Limits mini-bars, spend
+  split, brand icons per provider, and an honest "updated Xm ago" footer
+- Live-limit resilience: keep serving the last good real % through transient
+  poll failures (stale marker), burn-rate depletion projection, Antigravity
+  per-pool percentages, and plan auto-detection
+- Daemon serves 14 days of daily_series for week-over-week comparison
+- Stale/depletion cues and bar animations; complete Spanish translation
+
 * Thu Jul 09 2026 theyisuskill <theyisuskill@gmail.com> - 0.3.0-1
 - Anchor the 5h and weekly windows to each tool's real session start; both
   bars count down to the exact reset, and burn-rate projections only show
