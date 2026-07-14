@@ -3,56 +3,121 @@
 msgid ""
 msgstr ""
 "Project-Id-Version: ai-token-monitor\n"
+"Language: es\n"
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
-"Language: es\n"
 "Plural-Forms: nplurals=2; plural=(n != 1);\n"
 
-#. Popup: bar titles
+msgid "limit reached"
+msgstr "límite alcanzado"
+
+#, javascript-format
+msgid "≈%s left"
+msgstr "≈%s restante"
+
+msgid "no active session"
+msgstr "sin sesión activa"
+
+#, javascript-format
+msgid "resets in %s"
+msgstr "resetea en %s"
+
+#, javascript-format
+msgid "≈%s to limit"
+msgstr "≈%s para el límite"
+
+msgid "resetting…"
+msgstr "reseteando…"
+
+#, javascript-format
+msgid "runs out in %s"
+msgstr "se agota en %s"
+
+#, javascript-format
+msgid "data from %s ago"
+msgstr "datos de hace %s"
+
+#, javascript-format
+msgid "pace %s%% · lasts to reset"
+msgstr "ritmo %s%% · aguanta al reset"
+
+#, javascript-format
+msgid "pace +%s%% · running hot"
+msgstr "ritmo +%s%% · acelerado"
+
+#, javascript-format
+msgid "%s  ·  %s tokens"
+msgstr "%s  ·  %s tokens"
+
+#, javascript-format
+msgid "%s of %s  ·  %s tokens"
+msgstr "%s de %s  ·  %s tokens"
+
+#, javascript-format
+msgid "%s tokens"
+msgstr "%s tokens"
+
+#, javascript-format
+msgid "%s — session reset"
+msgstr "%s — sesión reseteada"
+
+msgid "A fresh 5-hour window is available"
+msgstr "Tienes una ventana de 5 horas limpia"
+
 msgid "Session (5h)"
 msgstr "Sesión (5h)"
 
 msgid "Weekly"
 msgstr "Semanal"
 
-#. Popup: per-tool submenu
-msgid "By model"
-msgstr "Por modelo"
+#, javascript-format
+msgid "%s of %s used"
+msgstr "%s de %s usado"
 
-#. Popup: daemon not running
-msgid "Daemon offline"
-msgstr "Daemon desconectado"
+#, javascript-format
+msgid "%s%% used"
+msgstr "%s%% usado"
 
-#. Popup: empty database
-msgid "No usage recorded yet"
-msgstr "Aún no hay uso registrado"
+#, javascript-format
+msgid "%s — %s at %s%%"
+msgstr "%s — %s al %s%%"
 
-msgid "Use Claude Code, agy or Codex and it will appear here"
-msgstr "Usa Claude Code, agy o Codex y aparecerá aquí"
+#, javascript-format
+msgid "%s — %s may run out before reset"
+msgstr "%s — %s podría agotarse antes del reset"
 
-#. Bar subtitle: $cost of $budget · tokens
-msgid "%s of %s  ·  %s tokens"
-msgstr "%s de %s  ·  %s tokens"
+#, javascript-format
+msgid "at this pace it runs out in %s (resets in %s)"
+msgstr "al ritmo actual se agota en %s (resetea en %s)"
 
-msgid "%s tokens"
-msgstr "%s tokens"
+msgid "Summary"
+msgstr "Resumen"
 
-#. Tool header: weekly spend
-msgid "%s / wk"
-msgstr "%s / sem"
+msgid "Spend · all providers"
+msgstr "Gasto · todos los proveedores"
 
-msgid "live limits unavailable: %s"
-msgstr "límites en vivo no disponibles: %s"
+msgid "Today"
+msgstr "Hoy"
 
-msgid "Links"
-msgstr "Enlaces"
+msgid "This week"
+msgstr "Esta semana"
 
+msgid "This month"
+msgstr "Este mes"
+
+#, javascript-format
 msgid "≈ %s at close"
 msgstr "≈ %s al cierre"
 
+msgid "Limits"
+msgstr "Límites"
+
 msgid "This week · by provider"
 msgstr "Esta semana · por proveedor"
+
+msgid "Links"
+msgstr "Enlaces"
 
 msgid "dashboard"
 msgstr "panel"
@@ -60,65 +125,55 @@ msgstr "panel"
 msgid "status"
 msgstr "estado"
 
-msgid "runs out in %s"
-msgstr "se agota en %s"
+#, javascript-format
+msgid "%s / wk"
+msgstr "%s / sem"
 
-msgid "data from %s ago"
-msgstr "datos de hace %s"
+#, javascript-format
+msgid "live limits unavailable: %s"
+msgstr "límites en vivo no disponibles: %s"
 
-msgid "%s — %s may run out before reset"
-msgstr "%s — %s podría agotarse antes del reset"
+msgid "Monthly"
+msgstr "Mensual"
 
-msgid "at this pace it runs out in %s (resets in %s)"
-msgstr "al ritmo actual se agota en %s (resetea en %s)"
+msgid "this calendar month"
+msgstr "este mes"
 
-#. Sparkline header
+msgid "By model"
+msgstr "Por modelo"
+
+msgid "Extra usage"
+msgstr "Uso extra"
+
+#, javascript-format
+msgid "%s of %s this month"
+msgstr "%s de %s este mes"
+
+msgid "Cost"
+msgstr "Costo"
+
+msgid "Daemon offline"
+msgstr "Daemon desconectado"
+
+msgid "No usage recorded yet"
+msgstr "Aún no hay uso registrado"
+
+msgid "Use Claude Code, agy, Codex or OpenCode and it will appear here"
+msgstr "Usa Claude Code, agy, Codex u OpenCode y aparecerá aquí"
+
+#, javascript-format
+msgid "updated %s ago"
+msgstr "actualizado hace %s"
+
+msgid "Preferences…"
+msgstr "Preferencias…"
+
 msgid "Last 7 days"
 msgstr "Últimos 7 días"
 
+#, javascript-format
 msgid "peak %s / day"
 msgstr "pico %s / día"
-
-#. Footer
-msgid "Today %s  ·  Month %s"
-msgstr "Hoy %s  ·  Mes %s"
-
-msgid "Synced %s"
-msgstr "Sincronizado %s"
-
-#. Bar subtitle tails
-msgid "limit reached"
-msgstr "límite alcanzado"
-
-msgid "≈%s left"
-msgstr "≈%s restante"
-
-msgid "no active session"
-msgstr "sin sesión activa"
-
-msgid "resets in %s"
-msgstr "resetea en %s"
-
-msgid "≈%s to limit"
-msgstr "≈%s para el límite"
-
-#. Desktop notification: "<tool> — <window> at N%"
-msgid "%s — %s at %s%%"
-msgstr "%s — %s al %s%%"
-
-msgid "%s of %s used"
-msgstr "%s de %s usado"
-
-#. Fresh-window notification
-msgid "%s — session reset"
-msgstr "%s — sesión reseteada"
-
-msgid "A fresh 5-hour window is available"
-msgstr "Tienes una ventana de 5 horas limpia"
-
-#. Preferences window
-msgid "Limits"
-msgstr "Límites"
 
 msgid "Subscription plans"
 msgstr "Planes de suscripción"
@@ -131,18 +186,6 @@ msgstr "Modo de presupuesto"
 
 msgid "Display"
 msgstr "Visualización"
-
-msgid "Bar scaling"
-msgstr "Escala de las barras"
-
-msgid "Preset: use the plan tiers above · Auto: calibrate to your own peak usage"
-msgstr "Preset: usa los planes de arriba · Auto: calibra con tus propios picos de uso"
-
-msgid "Preset"
-msgstr "Preset"
-
-msgid "Auto"
-msgstr "Auto"
 
 msgid "Top bar"
 msgstr "Barra superior"
@@ -159,18 +202,36 @@ msgstr "Solo icono"
 msgid "Today's spend"
 msgstr "Gasto de hoy"
 
+msgid "Popup layout"
+msgstr "Diseño del popup"
+
+msgid ""
+"Switcher: provider tabs, one card at a time · Stacked: all providers at once"
+msgstr ""
+"Pestañas: un proveedor a la vez · Apilado: todos los proveedores a la vez"
+
+msgid "Switcher"
+msgstr "Pestañas"
+
+msgid "Stacked"
+msgstr "Apilado"
+
 msgid "Limit notifications"
 msgstr "Notificaciones de límite"
 
 msgid "Notify when a bar crosses 70%, 90% or 100%"
 msgstr "Notifica cuando una barra cruza 70%, 90% o 100%"
 
-#. Plan combo subtitles
-msgid "Anthropic subscription"
-msgstr "Suscripción de Anthropic"
+msgid "Bar scaling"
+msgstr "Escala de las barras"
 
-msgid "Google AI subscription"
-msgstr "Suscripción de Google AI"
+msgid ""
+"Preset: use the plan tiers above · Auto: calibrate to your own peak usage"
+msgstr ""
+"Preset: usa los planes de arriba · Auto: calibra con tus propios picos de uso"
 
-msgid "ChatGPT subscription"
-msgstr "Suscripción de ChatGPT"
+msgid "Preset"
+msgstr "Preset"
+
+msgid "Auto"
+msgstr "Auto"

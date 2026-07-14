@@ -475,6 +475,7 @@ class Daemon:
             # the Summary's week-over-week spend delta.
             "daily": self.store.daily_series(time.time() - 14 * 86400.0),
             "budgets": self._resolved_budgets(),
+            "plans": self._effective_plans(),
             "tools": self.store.tools_seen(),
             "ui": self.config.ui,
             "updated": time.time(),
@@ -507,22 +508,40 @@ class Daemon:
                 }
                 for tool in config_mod.PLAN_PRESETS
             }
-        detected = {}
-        for tool, res in self._live.items():
-            spec = config_mod.PLAN_PRESETS.get(tool)
-            # Last OK result: a transient poll failure carries no plan_tier
-            # and must not flip the budgets back to the default preset.
-            tier = (self._live_ok.get(tool) or res).get("plan_tier")
-            plan = spec and config_mod.plan_from_tier(tier, spec["plans"])
-            if plan:
-                detected[tool] = plan
         return config_mod.resolve_budgets(
             plans=self.config.plans,
             mode=mode,
             overrides=self.config.budgets,
             peaks=peaks,
-            detected=detected,
+            detected=self._detected_plans(),
         )
+
+    def _detected_plans(self) -> dict:
+        """Plan each tool's live poller inferred from its credential tier."""
+        from . import config as config_mod
+
+        detected = {}
+        for tool in config_mod.PLAN_PRESETS:
+            spec = config_mod.PLAN_PRESETS[tool]
+            # Last OK result: a transient poll failure carries no plan_tier
+            # and must not flip the plan back to the default preset.
+            src = self._live_ok.get(tool) or self._live.get(tool) or {}
+            plan = config_mod.plan_from_tier(src.get("plan_tier"), spec["plans"])
+            if plan:
+                detected[tool] = plan
+        return detected
+
+    def _effective_plans(self) -> dict:
+        """Plan actually driving each tool's budgets, for the UI's plan badge:
+        an explicit ``plans.<tool>`` wins, else what the credential reported.
+        (Mirrors resolve_budgets' precedence so the badge can't disagree with
+        the bars.)"""
+        detected = self._detected_plans()
+        plans = dict(detected)
+        for tool, plan in (self.config.plans or {}).items():
+            if plan:
+                plans[tool] = plan
+        return plans
 
     def _schedule_emit(self) -> None:
         if self._emit_id:

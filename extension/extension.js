@@ -1048,7 +1048,11 @@ class Indicator extends PanelMenu.Button {
             text: style.label, style_class: 'ai-tool-name',
             x_expand: true, y_align: Clutter.ActorAlign.CENTER,
         }));
-        const tier = planLabel(live?.plan_tier);
+        // Prefer the plan actually driving the budgets (explicit config, else
+        // credential-detected) over the raw credential tier — the tier can
+        // lag the configured plan (org Max 20x still reports max_5x).
+        const tier = planLabel(this._snapshot?.plans?.[id]) ||
+            planLabel(live?.plan_tier);
         header.add_child(new St.Label({
             text: tier || fmt(_('%s / wk'), formatCost(week.cost_usd)),
             style_class: 'ai-tool-cost', y_align: Clutter.ActorAlign.CENTER,
