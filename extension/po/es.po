@@ -42,6 +42,30 @@ msgstr "%s tokens"
 msgid "%s / wk"
 msgstr "%s / sem"
 
+msgid "live limits unavailable: %s"
+msgstr "límites en vivo no disponibles: %s"
+
+msgid "Links"
+msgstr "Enlaces"
+
+msgid "dashboard"
+msgstr "panel"
+
+msgid "status"
+msgstr "estado"
+
+msgid "runs out in %s"
+msgstr "se agota en %s"
+
+msgid "data from %s ago"
+msgstr "datos de hace %s"
+
+msgid "%s — %s may run out before reset"
+msgstr "%s — %s podría agotarse antes del reset"
+
+msgid "at this pace it runs out in %s (resets in %s)"
+msgstr "al ritmo actual se agota en %s (resetea en %s)"
+
 #. Sparkline header
 msgid "Last 7 days"
 msgstr "Últimos 7 días"

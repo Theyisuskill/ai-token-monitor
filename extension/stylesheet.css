@@ -29,6 +29,37 @@
     color: #ff5f57;
 }
 
+/* Live-poller failure note under a provider header (bars are estimates). */
+.ai-live-status {
+    font-size: 10px;
+    color: #f2b13a;
+}
+
+/* Brand glyphs (icons/<tool>-symbolic.svg), tinted per tool via `color`. */
+.ai-brand-icon {
+    icon-size: 14px;
+    margin-right: 6px;
+}
+
+.ai-tab-icon {
+    icon-size: 12px;
+    margin-right: 5px;
+}
+
+/* Inline web-link buttons on the Summary "Links" rows. */
+.ai-link-button {
+    font-size: 10px;
+    color: #49c3d1;
+    padding: 2px 8px;
+    border-radius: 6px;
+    margin-left: 6px;
+}
+
+.ai-link-button:hover,
+.ai-link-button:focus {
+    background-color: rgba(73, 195, 209, 0.14);
+}
+
 /* -- provider switcher (tab bar) --------------------------------------- */
 
 .ai-tabbar-item {
@@ -45,6 +76,7 @@
     padding: 4px 9px;
     border-radius: 8px;
     color: #a1a1aa;
+    transition-duration: 150ms;
 }
 
 .ai-tab:hover {
@@ -120,6 +152,13 @@
 .ai-live-badge {
     font-size: 7px;
     color: #49c3d1;
+    margin-right: 6px;
+}
+
+/* Same dot, greyed: the poller is failing and the % is the last known one. */
+.ai-live-badge-stale {
+    font-size: 7px;
+    color: #71717a;
     margin-right: 6px;
 }
 

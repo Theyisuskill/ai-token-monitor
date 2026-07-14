@@ -37,9 +37,10 @@ install-services:
 	    > $(DBUS_DIR)/$(DBUS_NAME).service
 
 install-extension:
-	install -d $(EXT_DIR)
+	install -d $(EXT_DIR) $(EXT_DIR)/icons
 	install -m0644 extension/extension.js extension/prefs.js \
 	    extension/metadata.json extension/stylesheet.css $(EXT_DIR)/
+	install -m0644 extension/icons/*.svg extension/icons/NOTICE $(EXT_DIR)/icons/
 	@for po in extension/po/*.po; do \
 	    lang=$$(basename $$po .po); \
 	    install -d $(EXT_DIR)/locale/$$lang/LC_MESSAGES; \
@@ -61,7 +62,7 @@ uninstall-user:
 	rm -f $(UNIT_DIR)/ai-token-monitor.service $(DBUS_DIR)/$(DBUS_NAME).service
 
 pack:
-	gnome-extensions pack --force --podir=po extension/
+	gnome-extensions pack --force --podir=po --extra-source=icons extension/
 	@echo "-> $(UUID).shell-extension.zip"
 
 srpm:

@@ -1,0 +1,17 @@
+Brand icons
+===========
+
+claude_code-symbolic.svg  (Claude)        — from simple-icons (https://simpleicons.org), CC0-1.0
+gemini_cli-symbolic.svg   (Google Gemini) — from simple-icons (https://simpleicons.org), CC0-1.0
+opencode-symbolic.svg     (OpenCode)      — from simple-icons (https://simpleicons.org), CC0-1.0
+codex-symbolic.svg                        — original terminal-prompt glyph drawn for this
+                                            project (OpenAI's marks are not distributed by
+                                            simple-icons at the owner's request, so Codex
+                                            gets a generic glyph instead)
+
+The recolorable "-symbolic" variants were produced by setting fill="#bebebe".
+
+All trademarks, logos and brand names are the property of their respective
+owners. They are used here solely to identify the corresponding provider
+(nominative use); no affiliation with or endorsement by Anthropic, Google,
+OpenAI or the OpenCode project is implied.

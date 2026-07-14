@@ -199,6 +199,22 @@ function realWindowText(real) {
     return fmt(_('resets in %s'), spanStr(remaining));
 }
 
+/** Full subtitle for a provider-real bar: the reset countdown, plus the
+ * daemon's burn-rate projection when the window runs out BEFORE the reset,
+ * plus the data age when the poller is failing and the % is the last known
+ * one (the bar shows a grey dot in that case). */
+function realDetailText(real, live) {
+    let text = realWindowText(real);
+    const now = Date.now() / 1000;
+    if (real?.depletes_at && real.depletes_at > now)
+        text += `  ·  ${fmt(_('runs out in %s'), spanStr(real.depletes_at - now))}`;
+    if (live?.stale && live.data_fetched_at) {
+        const ago = Math.max(0, now - live.data_fetched_at);
+        text += `  ·  ${fmt(_('data from %s ago'), spanStr(ago))}`;
+    }
+    return text;
+}
+
 /** 'default_claude_max_20x' -> 'Max 20x'; '' when unknown. Shown top-right of a
  * provider card like CodexBar's plan badge. */
 function planLabel(tier) {
@@ -211,24 +227,25 @@ function planLabel(tier) {
 }
 
 /** CodexBar-style pace: how the real usage compares to even consumption across
- * the window. Negative = under the even-pace line (usage will last to reset). */
+ * the window. Negative = under the even-pace line (usage will last to reset).
+ * Returns {text, hot} — hot marks over-pace so the caller can tint the row. */
 function paceText(usedPct, resetsAt, spanSeconds) {
     if (!(spanSeconds > 0) || !resetsAt)
-        return '';
+        return null;
     const now = Date.now() / 1000;
     const elapsed = Math.max(0, Math.min(spanSeconds, spanSeconds - (resetsAt - now)));
     if (elapsed < spanSeconds * 0.03)
-        return '';  // too early in the window to be meaningful
+        return null;  // too early in the window to be meaningful
     const diff = Math.round(usedPct - elapsed / spanSeconds * 100);
     return diff <= 0
-        ? fmt(_('pace %s%% · lasts to reset'), diff)
-        : fmt(_('pace +%s%% · running hot'), diff);
+        ? {text: fmt(_('pace %s%% · lasts to reset'), diff), hot: false}
+        : {text: fmt(_('pace +%s%% · running hot'), diff), hot: true};
 }
 
 const ProgressBarRow = GObject.registerClass(
 class ProgressBarRow extends PopupMenu.PopupBaseMenuItem {
     _init(title, cost, budget, tokens, extra = '', color = null,
-        extraWarn = false, realPct = null) {
+        extraWarn = false, realPct = null, realStale = false, realDot = true) {
         super._init({reactive: false});
 
         // A provider-real percentage (from a live poller) drives the bar
@@ -256,10 +273,14 @@ class ProgressBarRow extends PopupMenu.PopupBaseMenuItem {
             style_class: 'ai-progress-title',
             x_expand: true,
         }));
-        if (real) {
+        if (real && realDot) {
+            // Teal dot = fresh provider data; grey = the poller is failing
+            // and this is the last % it managed to fetch. realDot=false lets
+            // a caller drive the bar by % without claiming provider truth
+            // (Summary rows that fall back to the estimate).
             titleRow.add_child(new St.Label({
                 text: '●',
-                style_class: 'ai-live-badge',
+                style_class: realStale ? 'ai-live-badge-stale' : 'ai-live-badge',
                 y_align: Clutter.ActorAlign.CENTER,
             }));
         }
@@ -283,6 +304,23 @@ class ProgressBarRow extends PopupMenu.PopupBaseMenuItem {
         });
         fill.set_style(`width: ${fillWidth}px;`);
         track.add_child(fill);
+
+        // Fill-in sweep on first map (every menu open rebuilds the rows). A
+        // paint-level scale, so the CSS width above keeps owning the layout.
+        if (fillWidth > 0 && St.Settings.get().enable_animations) {
+            fill.set_pivot_point(0, 0.5);
+            fill.scale_x = 0;
+            const mapId = fill.connect('notify::mapped', () => {
+                if (!fill.mapped)
+                    return;
+                fill.disconnect(mapId);
+                fill.ease({
+                    scale_x: 1,
+                    duration: 350,
+                    mode: Clutter.AnimationMode.EASE_OUT_QUAD,
+                });
+            });
+        }
 
         let detail;
         if (cost <= 0 && tokens <= 0 && extra) {
@@ -321,15 +359,22 @@ class Indicator extends PanelMenu.Button {
         super._init(0.5, 'AI Token Monitor');
         this._extension = extension;
 
+        // Bundled brand SVGs (icons/<tool>-symbolic.svg, see icons/NOTICE),
+        // cached by tool id; null marks a tool with no bundled icon so the
+        // colored-dot fallback kicks in without re-statting the file.
+        this._iconCache = new Map();
+
         const box = new St.BoxLayout({style_class: 'panel-status-menu-box'});
-        box.add_child(new St.Icon({
-            // Speedometer-style gauge (power-profiles); themed fallback for
-            // systems that don't ship it.
-            gicon: Gio.ThemedIcon.new_with_default_fallbacks(
-                'power-profile-performance-symbolic'),
+        // Speedometer-style gauge (power-profiles) until usage data arrives;
+        // then the most-pressured provider's brand glyph takes over.
+        this._defaultPanelGicon = Gio.ThemedIcon.new_with_default_fallbacks(
+            'power-profile-performance-symbolic');
+        this._panelIcon = new St.Icon({
+            gicon: this._defaultPanelGicon,
             fallback_icon_name: 'org.gnome.SystemMonitor-symbolic',
             style_class: 'system-status-icon',
-        }));
+        });
+        box.add_child(this._panelIcon);
         this._label = new St.Label({
             text: '',
             y_align: Clutter.ActorAlign.CENTER,
@@ -446,6 +491,7 @@ class Indicator extends PanelMenu.Button {
 
     _setUnavailable() {
         this._label.text = '';
+        this._panelIcon.gicon = this._defaultPanelGicon;
         this._snapshot = null;
         this._rebuildMenu();
     }
@@ -547,6 +593,24 @@ class Indicator extends PanelMenu.Button {
                         body);
                 }
                 this._alertState.set(key, bucket);
+
+                // One-shot heads-up (per window instance) when the daemon's
+                // burn-rate projection says the limit runs out BEFORE the
+                // provider resets it.
+                const real = this._toolData(period, id).real;
+                if (real?.depletes_at && real.resets_at) {
+                    const dKey = `${key}:depleted:${Math.round(real.resets_at)}`;
+                    if (!this._alertState.has(dKey)) {
+                        this._alertState.set(dKey, 1);
+                        const now = Date.now() / 1000;
+                        Main.notify(
+                            fmt(_('%s — %s may run out before reset'),
+                                style.label, label),
+                            fmt(_('at this pace it runs out in %s (resets in %s)'),
+                                spanStr(real.depletes_at - now),
+                                spanStr(real.resets_at - now)));
+                    }
+                }
             }
         }
     }
@@ -587,29 +651,38 @@ class Indicator extends PanelMenu.Button {
         });
     }
 
-    /** Highest usage across all limit bars, for the at-a-glance panel label. */
-    _maxPressure() {
-        let max = null;
-        for (const id of this._activeTools()) {
-            const prefix = toolStyle(id).prefix;
-            for (const [period, suffix] of [
-                ['five_hours', '_5h'], ['week', '_weekly'],
-            ]) {
-                let pct = this._realPct(period, id);  // provider-real wins
-                if (pct === null) {
-                    const budget = this._budget(`${prefix}${suffix}`);
-                    if (!(budget > 0))
-                        continue;
-                    pct = this._toolData(period, id).cost_usd / budget * 100;
-                }
-                if (max === null || pct > max)
-                    max = pct;
-            }
+    /** The bundled brand SVG for a tool, or null (third-party adapters fall
+     * back to the colored dot). Cached: one stat per tool per session. */
+    _brandIconFile(id) {
+        if (!this._iconCache.has(id)) {
+            const f = Gio.File.new_for_path(
+                `${this._extension.path}/icons/${id}-symbolic.svg`);
+            this._iconCache.set(id, f.query_exists(null) ? f : null);
         }
-        return max;
+        return this._iconCache.get(id);
+    }
+
+    _brandIcon(id, styleClass, color = null) {
+        const file = this._brandIconFile(id);
+        if (!file)
+            return null;
+        return new St.Icon({
+            gicon: new Gio.FileIcon({file}),
+            style_class: styleClass,
+            style: color ? `color: ${color};` : '',
+            y_align: Clutter.ActorAlign.CENTER,
+        });
     }
 
     _updatePanel() {
+        // The most-pressured provider owns the panel: its brand glyph next
+        // to the % (monochrome, theme-colored like any status icon).
+        const top = this._topPressure(this._activeTools());
+        const file = top && this._brandIconFile(top.id);
+        this._panelIcon.gicon = file
+            ? new Gio.FileIcon({file})
+            : this._defaultPanelGicon;
+
         const mode = this._snapshot?.ui?.panel ?? 'percent';
         if (mode === 'icon') {
             this._label.text = '';
@@ -621,15 +694,14 @@ class Indicator extends PanelMenu.Button {
             this._label.style_class = 'ai-panel-label';
             return;
         }
-        const pressure = this._maxPressure();
-        if (pressure === null) {
+        if (!top) {
             this._label.text = '';
             return;
         }
-        const pct = Math.min(999, Math.round(pressure));
+        const pct = Math.min(999, Math.round(top.pct));
         this._label.text = `${pct}%`;
         this._label.style_class =
-            `ai-panel-label ai-text-${severityClass(pressure)}`;
+            `ai-panel-label ai-text-${severityClass(top.pct)}`;
     }
 
     /** Tab bar: a "Summary" KPI tab, then one tab per active tool. Clicking a
@@ -645,7 +717,11 @@ class Indicator extends PanelMenu.Button {
                 can_focus: true,
             });
             const box = new St.BoxLayout({style_class: 'ai-tab-box'});
-            if (dotColor) {
+            const icon = dotColor
+                ? this._brandIcon(id, 'ai-tab-icon', dotColor) : null;
+            if (icon) {
+                box.add_child(icon);
+            } else if (dotColor) {
                 box.add_child(new St.Label({
                     text: '●', style: `color: ${dotColor};`,
                     style_class: 'ai-tab-dot', y_align: Clutter.ActorAlign.CENTER,
@@ -669,33 +745,41 @@ class Indicator extends PanelMenu.Button {
         this.menu.addMenuItem(item);
     }
 
-    /** The single most-pressured window across all tools (real % preferred),
-     * with which tool/window and its reset — for the Summary "highest limit". */
-    _topPressure(active) {
-        let best = null, bestPct = -1;
-        for (const id of active) {
-            const prefix = toolStyle(id).prefix;
-            for (const [period, suffix, label] of [
-                ['five_hours', '_5h', _('Session (5h)')],
-                ['week', '_weekly', _('Weekly')],
-            ]) {
-                const entry = this._toolData(period, id);
-                let pct = this._realPct(period, id);
-                let resets = entry.real?.resets_at;
-                if (pct === null) {
-                    const b = this._budget(`${prefix}${suffix}`);
-                    if (!(b > 0))
-                        continue;
-                    pct = entry.cost_usd / b * 100;
-                    resets = entry.resets_at;
-                }
-                if (pct > bestPct) {
-                    bestPct = pct;
-                    best = {id, label, pct, resets_at: resets};
-                }
+    /** A tool's most-pressured window (real % preferred): {label, pct,
+     * resets_at, real} — one Summary "Limits" row / the panel's pick. */
+    _worstWindow(id) {
+        const prefix = toolStyle(id).prefix;
+        let best = null;
+        for (const [period, suffix, label] of [
+            ['five_hours', '_5h', _('Session (5h)')],
+            ['week', '_weekly', _('Weekly')],
+        ]) {
+            const entry = this._toolData(period, id);
+            let pct = this._realPct(period, id);
+            let resets = entry.real?.resets_at;
+            const real = pct !== null;
+            if (pct === null) {
+                const b = this._budget(`${prefix}${suffix}`);
+                if (!(b > 0))
+                    continue;
+                pct = entry.cost_usd / b * 100;
+                resets = entry.resets_at;
             }
+            if (!best || pct > best.pct)
+                best = {label, pct, resets_at: resets, real};
         }
         return best;
+    }
+
+    /** The single most-pressured window across all tools. */
+    _topPressure(active) {
+        let top = null;
+        for (const id of active) {
+            const w = this._worstWindow(id);
+            if (w && (!top || w.pct > top.pct))
+                top = {id, ...w};
+        }
+        return top;
     }
 
     /** Summary tab: cross-provider KPIs (spend today/week/month), the single
@@ -712,19 +796,29 @@ class Indicator extends PanelMenu.Button {
         spend(_('This week'), 'week');
         spend(_('This month'), 'month');
 
-        const top = this._topPressure(active);
-        if (top) {
-            this._addSectionLabel(_('Highest limit'));
-            const s = toolStyle(top.id);
-            this.menu.addMenuItem(new ProgressBarRow(
-                `${s.label} · ${top.label}`, 0, 0, 0,
-                top.resets_at ? realWindowText({resets_at: top.resets_at}) : '',
-                s.color, false, top.pct));
+        // One compact bar per provider — its most-pressured window — sorted
+        // most-critical first. The teal live dot only marks provider-real %.
+        const limits = active
+            .map(id => ({id, w: this._worstWindow(id)}))
+            .filter(r => r.w)
+            .sort((a, b) => b.w.pct - a.w.pct);
+        if (limits.length) {
+            this._addSectionLabel(_('Limits'));
+            for (const {id, w} of limits) {
+                const s = toolStyle(id);
+                const stale = !!this._snapshot?.live?.[id]?.stale;
+                this.menu.addMenuItem(new ProgressBarRow(
+                    `${s.short} · ${w.label}`, 0, 0, 0,
+                    w.resets_at ? realWindowText({resets_at: w.resets_at}) : '',
+                    s.color, false, w.pct, stale, w.real));
+            }
         }
 
         this._addSectionLabel(_('Providers'));
         this._addKeyValueRow(fmt(_('%s active'), active.length),
             active.map(id => toolStyle(id).short).join(', '));
+
+        this._addLinksSection(active);
     }
 
     _addSectionLabel(text) {
@@ -744,32 +838,48 @@ class Indicator extends PanelMenu.Button {
         this.menu.addMenuItem(row);
     }
 
-    /** Per-provider action rows (Usage dashboard / Status page) that open the
-     * provider's web page in the default browser — CodexBar's card footer. */
-    _addProviderLinks(id) {
-        const links = TOOL_LINKS[id];
-        if (!links)
-            return;
-        const rows = [];
-        if (links.dashboard)
-            rows.push([_('Usage dashboard'),
-                'utilities-system-monitor-symbolic', links.dashboard]);
-        if (links.status)
-            rows.push([_('Status page'),
-                'network-transmit-receive-symbolic', links.status]);
+    /** Per-provider web links (usage dashboard / status page) as one compact
+     * row per provider, opened in the default browser. Lives on the Summary
+     * tab (and the stacked layout's tail) so provider cards stay focused on
+     * usage. */
+    _addLinksSection(active) {
+        const rows = active
+            .map(id => [id, TOOL_LINKS[id]])
+            .filter(([, links]) => links?.dashboard || links?.status);
         if (!rows.length)
             return;
-        this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
-        for (const [label, icon, url] of rows) {
-            const item = new PopupMenu.PopupImageMenuItem(label, icon);
-            item.connect('activate', () => {
-                try {
-                    Gio.AppInfo.launch_default_for_uri(url, null);
-                } catch (e) {
-                    console.warn(`[ai-token-monitor] open ${url}: ${e}`);
-                }
-            });
-            this.menu.addMenuItem(item);
+        this._addSectionLabel(_('Links'));
+        for (const [id, links] of rows) {
+            const style = toolStyle(id);
+            const row = new PopupMenu.PopupBaseMenuItem({reactive: false});
+            row.add_child(this._brandIcon(id, 'ai-brand-icon', style.color) ??
+                new St.Label({
+                    text: '●', style: `color: ${style.color};`,
+                    style_class: 'ai-tool-dot', y_align: Clutter.ActorAlign.CENTER,
+                }));
+            row.add_child(new St.Label({
+                text: style.short, style_class: 'ai-model-name',
+                x_expand: true, y_align: Clutter.ActorAlign.CENTER,
+            }));
+            const addLink = (label, url) => {
+                const btn = new St.Button({
+                    label, style_class: 'ai-link-button', can_focus: true,
+                });
+                btn.connect('clicked', () => {
+                    this.menu.close();
+                    try {
+                        Gio.AppInfo.launch_default_for_uri(url, null);
+                    } catch (e) {
+                        console.warn(`[ai-token-monitor] open ${url}: ${e}`);
+                    }
+                });
+                row.add_child(btn);
+            };
+            if (links.dashboard)
+                addLink(_('dashboard'), links.dashboard);
+            if (links.status)
+                addLink(_('status'), links.status);
+            this.menu.addMenuItem(row);
         }
     }
 
@@ -784,12 +894,14 @@ class Indicator extends PanelMenu.Button {
         const fiveH = this._toolData('five_hours', id);
         const live = this._snapshot?.live?.[id];
 
-        // Header: dot + name (left), plan tier (or weekly spend) on the right.
+        // Header: brand glyph (dot fallback) + name (left), plan tier (or
+        // weekly spend) on the right.
         const header = new PopupMenu.PopupBaseMenuItem({reactive: false});
-        header.add_child(new St.Label({
-            text: '●', style: `color: ${style.color};`,
-            style_class: 'ai-tool-dot', y_align: Clutter.ActorAlign.CENTER,
-        }));
+        header.add_child(this._brandIcon(id, 'ai-brand-icon', style.color) ??
+            new St.Label({
+                text: '●', style: `color: ${style.color};`,
+                style_class: 'ai-tool-dot', y_align: Clutter.ActorAlign.CENTER,
+            }));
         header.add_child(new St.Label({
             text: style.label, style_class: 'ai-tool-name',
             x_expand: true, y_align: Clutter.ActorAlign.CENTER,
@@ -801,25 +913,47 @@ class Indicator extends PanelMenu.Button {
         }));
         this.menu.addMenuItem(header);
 
+        // When the live poller is failing, the bars below silently fall back
+        // to the dollar estimate — say so, with the poller's own reason.
+        if (live?.status && live.status !== 'ok') {
+            const err = new PopupMenu.PopupBaseMenuItem({reactive: false});
+            err.add_child(new St.Label({
+                text: fmt(_('live limits unavailable: %s'), String(live.status)),
+                style_class: 'ai-live-status',
+                x_expand: true,
+            }));
+            this.menu.addMenuItem(err);
+        }
+
         const hourRate = this._toolData('hour', id).cost_usd;
         const dayRate = this._toolData('day', id).cost_usd / 24;
         const budget5h = this._budget(`${style.prefix}_5h`);
         const budgetWk = this._budget(`${style.prefix}_weekly`);
 
-        // Grouped tools (Antigravity: Gemini vs Claude & GPT) get a pair per pool.
+        // Grouped tools (Antigravity: Gemini vs Claude & GPT) get a pair per
+        // pool, each preferring the provider's real per-pool % when the live
+        // poller supplied one.
+        const stale = !!live?.stale;
         const fiveGroups = fiveH.groups ?? [];
         const weekByKey = new Map((week.groups ?? []).map(g => [g.key, g]));
         if (fiveGroups.length >= 2) {
             for (const g5 of fiveGroups) {
                 const gw = weekByKey.get(g5.key) ?? {cost_usd: 0, total_tokens: 0};
+                const r5 = g5.real, rw = gw.real;
                 const s = windowText(g5, budget5h, 0);
                 const w = windowText(gw, budgetWk, 0);
                 this.menu.addMenuItem(new ProgressBarRow(
                     `${_('Session (5h)')} · ${g5.label}`,
-                    g5.cost_usd, budget5h, g5.total_tokens, s.text, style.color, s.warn));
+                    g5.cost_usd, budget5h, g5.total_tokens,
+                    r5 ? realDetailText(r5, live) : s.text, style.color,
+                    r5 ? !!r5.depletes_at : s.warn,
+                    r5 ? r5.used_percent : null, stale));
                 this.menu.addMenuItem(new ProgressBarRow(
                     `${_('Weekly')} · ${g5.label}`,
-                    gw.cost_usd, budgetWk, gw.total_tokens, w.text, style.color, w.warn));
+                    gw.cost_usd, budgetWk, gw.total_tokens,
+                    rw ? realDetailText(rw, live) : w.text, style.color,
+                    rw ? !!rw.depletes_at : w.warn,
+                    rw ? rw.used_percent : null, stale));
             }
         } else {
             const real5 = fiveH.real, realWk = week.real;
@@ -827,19 +961,23 @@ class Indicator extends PanelMenu.Button {
             const weekly = windowText(week, budgetWk, dayRate);
             this.menu.addMenuItem(new ProgressBarRow(
                 _('Session (5h)'), fiveH.cost_usd, budget5h, fiveH.total_tokens,
-                real5 ? realWindowText(real5) : session.text, style.color,
-                real5 ? false : session.warn, real5 ? real5.used_percent : null));
+                real5 ? realDetailText(real5, live) : session.text, style.color,
+                real5 ? !!real5.depletes_at : session.warn,
+                real5 ? real5.used_percent : null, stale));
             // Weekly, with a CodexBar-style pace line once the real % is known.
-            let wkText = realWk ? realWindowText(realWk) : weekly.text;
+            let wkText = realWk ? realDetailText(realWk, live) : weekly.text;
+            let wkWarn = realWk ? !!realWk.depletes_at : weekly.warn;
             if (realWk) {
                 const p = paceText(realWk.used_percent, realWk.resets_at, WEEK_SPAN_S);
-                if (p)
-                    wkText += `  ·  ${p}`;
+                if (p) {
+                    wkText += `  ·  ${p.text}`;
+                    wkWarn ||= p.hot;
+                }
             }
             this.menu.addMenuItem(new ProgressBarRow(
                 _('Weekly'), week.cost_usd, budgetWk, week.total_tokens,
-                wkText, style.color, realWk ? false : weekly.warn,
-                realWk ? realWk.used_percent : null));
+                wkText, style.color, wkWarn,
+                realWk ? realWk.used_percent : null, stale));
 
             // Monthly window — for plans that also meter a monthly limit, like
             // OpenCode Go (Continuous / Weekly / Monthly). The provider's real
@@ -864,7 +1002,7 @@ class Indicator extends PanelMenu.Button {
                 this.menu.addMenuItem(new ProgressBarRow(
                     m.label, 0, 0, 0,
                     m.resets_at ? realWindowText(m) : '', style.color, false,
-                    m.used_percent));
+                    m.used_percent, stale));
             }
         } else if ((week.models ?? []).length) {
             this._addSectionLabel(_('By model'));
@@ -895,8 +1033,6 @@ class Indicator extends PanelMenu.Button {
             `${formatCost(today.cost_usd)}  ·  ${formatTokens(today.total_tokens)}`);
         this._addKeyValueRow(_('This month'),
             `${formatCost(month.cost_usd)}  ·  ${formatTokens(month.total_tokens)}`);
-
-        this._addProviderLinks(id);
     }
 
     _rebuildMenu() {
@@ -932,12 +1068,17 @@ class Indicator extends PanelMenu.Button {
         // at a time — the compact CodexBar-style view; "stacked" lists every
         // provider's full section at once (the original behaviour).
         const layout = this._snapshot.ui?.layout ?? 'switcher';
+        // Provider tabs stay focused on the card; the links, sparkline,
+        // footer and Preferences all live on the Summary tab only.
+        let showTail = true;
         if (layout === 'stacked') {
             active.forEach((id, index) => {
                 if (index > 0)
                     this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
                 this._addProviderDetail(id);
             });
+            this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+            this._addLinksSection(active);
         } else {
             // Switcher: a Summary KPI tab plus one card per tool. Default to
             // Summary; keep the user's pick once they choose a tab.
@@ -950,7 +1091,11 @@ class Indicator extends PanelMenu.Button {
                 this._addSummary(active);
             else
                 this._addProviderDetail(sel);
+            showTail = sel === 'summary';
         }
+
+        if (!showTail)
+            return;
 
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
         this._addSparkline();
