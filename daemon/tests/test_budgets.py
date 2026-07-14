@@ -1,4 +1,4 @@
-from ai_token_monitor.config import AUTO_HEADROOM, resolve_budgets
+from ai_token_monitor.config import AUTO_HEADROOM, plan_from_tier, resolve_budgets
 
 
 def test_defaults_are_lowest_tiers():
@@ -50,3 +50,27 @@ def test_non_tool_overrides_pass_through():
                               overrides={"daily": 10.0, "monthly": 200.0})
     assert budgets["daily"] == 10.0
     assert budgets["monthly"] == 200.0
+
+
+def test_detected_plan_fills_in_when_config_is_silent():
+    budgets = resolve_budgets(plans={}, mode="preset", overrides={},
+                              detected={"claude_code": "max_5x"})
+    assert budgets["claude_5h"] == 75.0
+    assert budgets["claude_weekly"] == 375.0
+
+
+def test_explicit_plan_beats_detected():
+    budgets = resolve_budgets(plans={"claude_code": "max_20x"},
+                              mode="preset", overrides={},
+                              detected={"claude_code": "max_5x"})
+    assert budgets["claude_5h"] == 300.0
+
+
+def test_plan_from_tier_matches_provider_strings():
+    claude_plans = ("pro", "max_5x", "max_20x")
+    assert plan_from_tier("default_claude_max_5x", claude_plans) == "max_5x"
+    assert plan_from_tier("default_claude_max_20x", claude_plans) == "max_20x"
+    assert plan_from_tier("default_claude_pro", claude_plans) == "pro"
+    assert plan_from_tier("enterprise_raven", claude_plans) is None
+    assert plan_from_tier(None, claude_plans) is None
+    assert plan_from_tier("plus", ("plus", "pro")) == "plus"

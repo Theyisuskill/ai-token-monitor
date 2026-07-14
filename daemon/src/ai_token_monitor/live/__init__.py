@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from .base import LivePoller
+from .base import LivePoller, effective_live  # noqa: F401  (re-exported)
 
 log = logging.getLogger(__name__)
 

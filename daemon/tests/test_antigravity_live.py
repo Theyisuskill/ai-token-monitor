@@ -77,6 +77,10 @@ def test_quota_summary_maps_two_pools_and_windows():
     assert labels["Gemini 5h"]["group"] == "session"
     assert labels["Claude & GPT weekly"]["used_percent"] == approx(10.0)
     assert labels["Claude & GPT weekly"]["group"] == "weekly"
+    # Pool keys match the daemon's QUOTA_GROUPS so the per-pool sub-bars in
+    # the snapshot can be driven by these scoped entries.
+    assert labels["Gemini 5h"]["pool"] == "gemini"
+    assert labels["Claude & GPT weekly"]["pool"] == "claude_gpt"
     assert out["extra_usage"] is None
 
 

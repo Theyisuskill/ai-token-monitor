@@ -142,6 +142,12 @@ def _pool_label(display_name: Any) -> str:
     return text.strip() or "Quota"
 
 
+def _pool_key(pool_label: str) -> str | None:
+    """The daemon's QUOTA_GROUPS key for a pool, so scoped entries can drive
+    the per-pool sub-bars in the snapshot (gemini / claude_gpt)."""
+    return {"Gemini": "gemini", "Claude & GPT": "claude_gpt"}.get(pool_label)
+
+
 def _bucket_kind(bucket: dict[str, Any]) -> str:
     combined = (
         str(bucket.get("bucketId") or "") + " " + str(bucket.get("displayName") or "")
@@ -201,7 +207,8 @@ def normalize_quota_summary(payload: dict[str, Any], plan_tier: str | None) -> d
                 bname = str(bucket.get("displayName") or bucket.get("bucketId") or "").strip()
                 label, group_field = (f"{pool} {bname}".strip() or pool), "weekly"
             scoped.append({"label": label, "used_percent": used,
-                           "resets_at": resets, "group": group_field})
+                           "resets_at": resets, "group": group_field,
+                           "pool": _pool_key(pool)})
 
     windows: dict[str, dict[str, Any]] = {}
     if session:

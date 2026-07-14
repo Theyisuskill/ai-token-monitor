@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import logging
 import os
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
@@ -173,28 +174,48 @@ def validate_ui(ui: Any) -> str | None:
     return None
 
 
+def plan_from_tier(tier: Any, plan_keys: Iterable[str]) -> str | None:
+    """Map a provider-reported tier string to one of the tool's plan keys.
+
+    Claude's credential carries ``rateLimitTier: default_claude_max_5x``,
+    Codex a ``plan_type`` like ``plus`` — a substring match against the
+    tool's own preset keys covers both without a per-provider table.
+    """
+    if not tier or not isinstance(tier, str):
+        return None
+    lowered = tier.lower()
+    for key in sorted(plan_keys, key=len, reverse=True):
+        if key in lowered:
+            return key
+    return None
+
+
 def resolve_budgets(
     plans: dict[str, str] | None,
     mode: str,
     overrides: dict[str, float] | None,
     peaks: dict[str, dict[str, float]] | None = None,
+    detected: dict[str, str] | None = None,
 ) -> dict[str, float]:
     """Concrete per-tool budget dict the UI consumes (``claude_5h`` etc.).
 
     Precedence per key, highest first:
       1. an explicit ``budgets:`` override in config,
       2. the user's observed peak * headroom (only when ``mode == 'auto'``),
-      3. the plan preset for the tool (default_plan if the plan is unset),
+      3. the plan preset for the tool — an explicit ``plans:`` entry, else
+         the plan a live poller ``detected`` from the credential, else the
+         tool's default_plan.
     Any non-tool keys already in ``overrides`` (daily/weekly/monthly) pass
     through untouched.
     """
     plans = plans or {}
     overrides = overrides or {}
     peaks = peaks or {}
+    detected = detected or {}
     resolved: dict[str, float] = dict(overrides)
     for tool, spec in PLAN_PRESETS.items():
         prefix = spec["prefix"]
-        plan = plans.get(tool) or spec["default_plan"]
+        plan = plans.get(tool) or detected.get(tool) or spec["default_plan"]
         base = spec["plans"].get(plan) or spec["plans"][spec["default_plan"]]
         for window in ("5h", "weekly"):
             key = f"{prefix}_{window}"

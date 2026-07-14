@@ -17,6 +17,7 @@ from gi.repository import GLib  # noqa: E402
 
 from . import adapters, live
 from .config import Config
+from .live import projection
 from .pricing import CostEngine
 from .service import MonitorInterface, publish
 from .store import Store, period_start
@@ -64,7 +65,14 @@ class Daemon:
         # tool, plus a per-poller "busy" guard so polls never overlap.
         self.pollers = live.create_enabled(config.live_limits)
         self._live: dict[str, dict] = {}
+        self._live_ok: dict[str, dict] = {}
         self._live_busy: dict[str, bool] = {}
+        self._live_status: dict[str, str] = {}
+        # (tool, window-key) -> [(ts, used%), ...] feeding the burn-rate
+        # projection; reset whenever the provider's reset time moves.
+        self._live_samples: dict[tuple[str, str], list] = {}
+        self._live_resets: dict[tuple[str, str], float] = {}
+        self._plan_warned: dict[str, object] = {}
         self.interface = MonitorInterface(self)
         self._bus = None
         self._loop = None
@@ -202,22 +210,79 @@ class Daemon:
     def _apply_live(self, name: str, tool: str, result: dict) -> bool:
         self._live_busy[name] = False
         self._live[tool] = result
-        log.debug("live %s: %s", tool, result.get("status"))
+        # Journal status TRANSITIONS only: a poller failing for hours must
+        # leave a trace, but a steady state shouldn't log a line per poll.
+        status = result.get("status") or "error"
+        if status == "ok":
+            self._live_ok[tool] = result
+            self._note_samples(tool, result)
+            self._warn_plan_mismatch(tool, result.get("plan_tier"))
+        if status != self._live_status.get(name):
+            self._live_status[name] = status
+            if status == "ok":
+                log.info("live poller %s: ok", name)
+            else:
+                log.warning("live poller %s: %s", name, status)
         self._schedule_emit()
         return GLib.SOURCE_REMOVE
+
+    def _note_samples(self, tool: str, result: dict) -> None:
+        """Accumulate (ts, used%) per window for the burn-rate projection,
+        restarting whenever the provider's reset time moves (new window)."""
+        ts = float(result.get("fetched_at") or time.time())
+        for key, w in (result.get("windows") or {}).items():
+            pct = w.get("used_percent")
+            if not isinstance(pct, (int, float)):
+                continue
+            k = (tool, key)
+            resets = w.get("resets_at")
+            prev = self._live_resets.get(k)
+            if resets is not None:
+                if prev is not None and abs(float(resets) - prev) > 60.0:
+                    self._live_samples[k] = []
+                self._live_resets[k] = float(resets)
+            samples = self._live_samples.setdefault(k, [])
+            samples.append((ts, float(pct)))
+            # The projector only reads the last hour; keep the list bounded.
+            del samples[:-64]
+
+    def _warn_plan_mismatch(self, tool: str, tier) -> None:
+        """One WARNING per tier value when the credential's reported tier
+        disagrees with an explicitly configured plan (the config wins)."""
+        from . import config as config_mod
+
+        spec = config_mod.PLAN_PRESETS.get(tool)
+        configured = (self.config.plans or {}).get(tool)
+        if not spec or not configured or tier == self._plan_warned.get(tool):
+            return
+        self._plan_warned[tool] = tier
+        detected = config_mod.plan_from_tier(tier, spec["plans"])
+        if detected and detected != configured:
+            log.warning(
+                "%s credential reports tier %r (plan %s) but config has "
+                "plans.%s=%s; using the config — remove plans.%s to follow "
+                "the credential", tool, tier, detected, tool, configured, tool)
 
     def _attach_live(self, snap: dict) -> None:
         """Merge poller results into the snapshot: a per-tool `real` block on
         the 5h/weekly window entries, plus a top-level `live` status map so the
         UI can show which bars are provider-real vs estimated, and why."""
+        now = time.time()
         status = {}
         for tool, res in self._live.items():
+            # A transient poll failure keeps serving the last OK data (see
+            # effective_live) so the bars don't flap between the provider's
+            # real % and the dollar estimate every time a poll hiccups.
+            data, stale = live.effective_live(res, self._live_ok.get(tool), now)
             status[tool] = {"status": res.get("status"),
                             "fetched_at": res.get("fetched_at"),
-                            "plan_tier": res.get("plan_tier")}
-            if res.get("status") != "ok":
+                            "plan_tier": (data or res).get("plan_tier")}
+            if stale:
+                status[tool]["stale"] = True
+                status[tool]["data_fetched_at"] = (data or {}).get("fetched_at")
+            if data is None:
                 continue
-            windows = res.get("windows") or {}
+            windows = data.get("windows") or {}
             for period, key in (("five_hours", "five_hour"), ("week", "weekly")):
                 w = windows.get(key)
                 if not w:
@@ -225,17 +290,38 @@ class Daemon:
                 entry = next((t for t in snap.get(period, {}).get("tools", [])
                               if t.get("tool") == tool), None)
                 if entry is not None:
-                    entry["real"] = {"used_percent": w.get("used_percent"),
-                                     "resets_at": w.get("resets_at"),
-                                     "source": "provider"}
-            scoped = res.get("scoped")
+                    real = {"used_percent": w.get("used_percent"),
+                            "resets_at": w.get("resets_at"),
+                            "source": "provider"}
+                    depletes = projection.project_depletion(
+                        self._live_samples.get((tool, key), []), now,
+                        w.get("resets_at"))
+                    if depletes is not None:
+                        real["depletes_at"] = depletes
+                    entry["real"] = real
+            scoped = data.get("scoped")
             if scoped:
                 entry = next((t for t in snap.get("week", {}).get("tools", [])
                               if t.get("tool") == tool), None)
                 if entry is not None:
                     entry["real_scoped"] = scoped
-            if res.get("extra_usage"):
-                status[tool]["extra_usage"] = res["extra_usage"]
+                # Grouped tools (agy's Gemini vs Claude & GPT pools): scoped
+                # entries carrying a pool key drive the matching per-pool
+                # sub-bars, same preference the tool-level `real` gets.
+                for period, kind in (("five_hours", "session"),
+                                     ("week", "weekly")):
+                    entry = next((t for t in snap.get(period, {}).get("tools", [])
+                                  if t.get("tool") == tool), None)
+                    for g in (entry or {}).get("groups") or []:
+                        m = next((s for s in scoped
+                                  if s.get("pool") == g.get("key")
+                                  and s.get("group") == kind), None)
+                        if m:
+                            g["real"] = {"used_percent": m.get("used_percent"),
+                                         "resets_at": m.get("resets_at"),
+                                         "source": "provider"}
+            if data.get("extra_usage"):
+                status[tool]["extra_usage"] = data["extra_usage"]
         snap["live"] = status
 
     def _prune_old(self) -> None:
@@ -419,11 +505,21 @@ class Daemon:
                 }
                 for tool in config_mod.PLAN_PRESETS
             }
+        detected = {}
+        for tool, res in self._live.items():
+            spec = config_mod.PLAN_PRESETS.get(tool)
+            # Last OK result: a transient poll failure carries no plan_tier
+            # and must not flip the budgets back to the default preset.
+            tier = (self._live_ok.get(tool) or res).get("plan_tier")
+            plan = spec and config_mod.plan_from_tier(tier, spec["plans"])
+            if plan:
+                detected[tool] = plan
         return config_mod.resolve_budgets(
             plans=self.config.plans,
             mode=mode,
             overrides=self.config.budgets,
             peaks=peaks,
+            detected=detected,
         )
 
     def _schedule_emit(self) -> None:
