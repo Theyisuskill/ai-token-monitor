@@ -8,6 +8,7 @@ loopback or HTTP request. ``ports: []`` disables /proc port discovery so
 
 import json
 import time
+from datetime import datetime, timedelta, timezone
 
 from pytest import approx
 
@@ -18,6 +19,17 @@ from ai_token_monitor.live.antigravity import (
     parse_plan_tier,
 )
 
+
+def _iso_in(**delta):
+    """A UTC ISO-8601 reset time relative to now, so fixtures never go stale."""
+    return (datetime.now(timezone.utc) + timedelta(**delta)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ")
+
+
+_SESSION_RESET = _iso_in(hours=3)
+_WEEKLY_RESET = _iso_in(days=4)
+_OAUTH_RESET = _iso_in(days=1)
+
 # Trimmed realistic RetrieveUserQuotaSummary response (the two real pools:
 # Gemini vs. Claude & GPT), each with a 5-hour (session) and a weekly bucket.
 QUOTA_SUMMARY = {
@@ -27,18 +39,18 @@ QUOTA_SUMMARY = {
             {"displayName": "Gemini Models", "buckets": [
                 {"bucketId": "gemini-5h", "displayName": "5-hour usage",
                  "remainingFraction": 0.80,
-                 "resetTime": "2026-07-12T18:00:00Z", "disabled": False},
+                 "resetTime": _SESSION_RESET, "disabled": False},
                 {"bucketId": "gemini-weekly", "displayName": "Weekly usage",
                  "remainingFraction": 0.60,
-                 "resetTime": "2026-07-18T00:00:00Z", "disabled": False},
+                 "resetTime": _WEEKLY_RESET, "disabled": False},
             ]},
             {"displayName": "Claude & GPT models", "buckets": [
                 {"bucketId": "claude-gpt-5h", "displayName": "5-hour usage",
                  "remaining": {"remainingFraction": 0.50},
-                 "resetTime": "2026-07-12T18:00:00Z", "disabled": False},
+                 "resetTime": _SESSION_RESET, "disabled": False},
                 {"bucketId": "claude-gpt-weekly", "displayName": "Weekly usage",
                  "remainingFraction": 0.90,
-                 "resetTime": "2026-07-18T00:00:00Z", "disabled": False},
+                 "resetTime": _WEEKLY_RESET, "disabled": False},
                 {"bucketId": "autocomplete", "displayName": "Autocomplete",
                  "remainingFraction": None, "disabled": True},
             ]},
@@ -93,11 +105,11 @@ def test_parse_plan_tier_prefers_user_tier():
 OAUTH_QUOTA = {
     "buckets": [
         {"modelId": "gemini-3-pro", "remainingFraction": 0.25,
-         "resetTime": "2026-07-13T00:00:00Z", "tokenType": "input"},
+         "resetTime": _OAUTH_RESET, "tokenType": "input"},
         {"modelId": "gemini-3-pro", "remainingFraction": 0.40,
-         "resetTime": "2026-07-13T00:00:00Z", "tokenType": "output"},
+         "resetTime": _OAUTH_RESET, "tokenType": "output"},
         {"modelId": "gemini-3-flash", "remainingFraction": 0.90,
-         "resetTime": "2026-07-13T00:00:00Z", "tokenType": "input"},
+         "resetTime": _OAUTH_RESET, "tokenType": "input"},
     ]
 }
 
