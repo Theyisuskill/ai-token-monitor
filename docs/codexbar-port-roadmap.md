@@ -44,8 +44,8 @@ Keychain-only and infeasible here.
 |---|-------|------|:---:|:---:|---|
 | A | OpenCode local `.db` adapter | LOCAL | S | High | **Done** |
 | B | Claude real 5h/weekly % + reset (OAuth) | NET+creds | M | ★ Highest | **Done** |
-| C | Antigravity real quota via local loopback | loopback | M | High | **Built (off)** |
-| G | Provider status / "real vs estimate" badges | LOCAL/NET | S | Med-High | Planned |
+| C | Antigravity real quota via local loopback | loopback | M | High | **On (awaits agy run)** |
+| G | Provider status / "real vs estimate" badges | LOCAL/NET | S | Med-High | **Done** |
 | D | Gemini/Antigravity quota via Google OAuth | NET+creds | M/L | Med | Fallback |
 | F | OpenCode real 5h/weekly % (web cookie) | NET+cookie | M | Med | Optional |
 | E | Codex/ChatGPT real limits (OAuth) | NET+creds | M | Low* | **Built (off)** |
@@ -102,12 +102,19 @@ No cloud, no credential — just talk to the running `agy` language server.
   split this app already models. Identity/tier via `GetUserStatus`.
 - Layer on top of the existing `.db` protobuf adapter (keep it for token/cost history).
 
-### Track G — status / "real vs estimate" badges
-The daemon already knows, per track, whether the credential exists, when the last
-poll succeeded, and the last HTTP status. Surface a small per-tool `status`
-struct over D-Bus (`{credential, last_ok_ts, last_error, source, plan_tier}`); the
-extension renders a dot, the Waybar module a tooltip. Build alongside the Track B
-schema change so the user can always tell a real bar from an estimated or stale one.
+### Track G — status / "real vs estimate" badges — **DONE**
+Shipped in stages: the snapshot's top-level `live` map carries
+`{status, fetched_at, plan_tier, stale?, data_fetched_at?}` per tool; poller
+status *transitions* are logged to the journal (WARNING on failure, INFO on
+recovery); a transient poll failure keeps serving the last OK data for up to
+30 min (`live/base.py: effective_live`, windows whose reset passed are
+dropped) so bars don't flap back to the dollar estimate. The extension marks a
+real bar with a teal dot, a **stale** real bar with a grey dot + "data from Xm
+ago", and shows an amber "live limits unavailable: <reason>" note under the
+provider header while the poller is failing. Bonus beyond CodexBar: a
+burn-rate projection (`live/projection.py`) over the sampled real % adds
+`depletes_at` when the window would hit 100% before the provider resets it —
+rendered as "runs out in X" plus a one-shot desktop notification.
 
 ### Tracks D / F / E / H / I
 See the table. D (Gemini OAuth via `~/.gemini/oauth_creds.json` →
@@ -146,10 +153,12 @@ default `enabled: false` in `live_limits`:
   the right ports but the running `code` process exposes no `--csrf_token`
   right now (→ 401) and the Gemini token is expired (→ `token_expired`), so it
   can't be live-verified yet; the pure normalizers are unit-tested. Off by
-  default because it probes local server ports; enable once Antigravity is
-  running. NOTE: real per-pool rendering in the extension's grouped (agy)
-  branch is still a follow-up — for now agy's real data would surface in the
-  Overview row (tool-level), not the two detail pool bars.
+  default because it probes local server ports; **enabled in this machine's
+  config** — pending a live run of Antigravity to verify end-to-end. Per-pool
+  real rendering is done: scoped entries carry a `pool` key matching
+  `QUOTA_GROUPS`, `_attach_live` copies them onto the snapshot's `groups[]`
+  sub-entries, and the extension's grouped branch prefers `g.real` on the two
+  pool bars.
 - **Codex** (`name=codex`, `tool=codex`): `~/.codex/auth.json` →
   `chatgpt.com/backend-api/wham/usage`. Portable, unit-tested, off by default
   (no `~/.codex` here).
@@ -168,3 +177,12 @@ of the popup — Overview + one tab per tool — so the widget stays compact and
 you drill into a provider for its full card (CodexBar's Merge-Icons/Overview
 idea). `_addTabBar` / `_addOverviewRow` / `_addProviderDetail` in
 `extension.js`; togglable to the old `stacked` layout in Preferences.
+
+**Brand icons** (`extension/icons/*-symbolic.svg`, see `icons/NOTICE`):
+recolorable simple-icons SVGs (CC0) for Claude / Gemini / OpenCode plus an
+original terminal glyph for Codex (OpenAI's marks left simple-icons at the
+owner's request — don't bundle them). Tinted with the tool's brand color in
+tabs, card headers and link rows; the top-bar indicator swaps its generic
+gauge for the most-pressured provider's glyph (monochrome). Summary shows a
+per-provider "Limits" mini-bar list; bars fill in with a 350ms scale sweep
+(honors `enable-animations`); over-pace weekly rows tint amber.

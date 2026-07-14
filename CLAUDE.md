@@ -92,8 +92,8 @@ so editing the repo changes nothing until you sync:
   into `~/.local/share/ai-token-monitor-app/ai_token_monitor/`, clear
   `__pycache__`, then `systemctl --user restart ai-token-monitor`. **No logout.**
 - **Extension** at `~/.local/share/gnome-shell/extensions/<uuid>/`. Copy
-  `extension/{extension.js,prefs.js,metadata.json,stylesheet.css}` there and
-  `msgfmt` the `po/*.po`. **Wayland: must log out / log back in** to reload
+  `extension/{extension.js,prefs.js,metadata.json,stylesheet.css}` there, plus
+  `extension/icons/` (brand SVGs), and `msgfmt` the `po/*.po`. **Wayland: must log out / log back in** to reload
   (`Alt+F2 r` is X11-only). Quick preview without logout:
   `dbus-run-session -- gnome-shell --nested --wayland`.
 - `make` is **not installed** here — run the underlying commands directly
@@ -106,9 +106,11 @@ Verify the daemon live: `ai-token-monitor --summary all | jq`, or call
 
 ## Conventions
 
-- Tests: `cd daemon && python3 -m pytest -q` (pure Python — no PyGObject/dasbus
-  needed; adapters/pollers expose pure `normalize_*`/`parse` functions that are
-  unit-tested with realistic payloads, no network). Keep them green.
+- Tests: pure Python — no PyGObject/dasbus needed; adapters/pollers expose pure
+  `normalize_*`/`parse` functions that are unit-tested with realistic payloads,
+  no network. Keep them green. **pytest is NOT installed system-wide on this
+  machine**: one-time `python3 -m venv ~/.venvs/aitm && ~/.venvs/aitm/bin/pip
+  install pytest pyyaml`, then `cd daemon && ~/.venvs/aitm/bin/python -m pytest -q`.
 - New adapters/pollers register via a decorator; ship third-party ones as pip
   packages exposing the `ai_token_monitor.adapters` entry-point group.
 - GPL-3.0-or-later. Packaging: RPM + extensions.gnome.org (no Flatpak — the
