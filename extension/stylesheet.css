@@ -3,14 +3,23 @@
  * Visual language mirrors CodexBar: a dark card, thin fully-rounded "pill"
  * meters with a teal fill, and muted zinc-grey labels (label left, percentage
  * right). Severity (amber/red past 70/90%) is layered on top — that is this
- * app's own signal and stays uniform across tools. The fill width is set in
- * pixels from JS (St CSS has no percentage widths) against the 300px track
- * below — keep the two in sync. */
+ * app's own signal and stays uniform across tools. St CSS has no percentage
+ * widths, so the meter fill is sized from the track's real allocation by the
+ * MeterBar widget in extension.js — no pixel width to keep in sync here. */
 
 /* CodexBar-ish palette (zinc neutrals + teal accent), for reference:
  *   text primary   #f4f4f5   secondary #a1a1aa   muted #71717a
  *   teal fill      #3aa7bf -> #49c3d1
  *   warn #f2b13a   danger #ff5f57 */
+
+/* -- popup card -------------------------------------------------------- */
+
+/* Fixed card width: every tab (Summary or a provider) opens at the same size
+ * instead of the popup resizing itself around each tab's longest line. Labels
+ * that can outgrow it ellipsize in JS rather than pushing the card wider. */
+.ai-menu {
+    width: 390px;
+}
 
 /* -- top bar ---------------------------------------------------------- */
 
@@ -193,8 +202,10 @@
     margin-right: 6px;
 }
 
+/* The track takes the card's full content width (MeterBar sets x_expand) and
+ * splits it in allocate — never give it a fixed width, or the fill and the
+ * percentage beside it stop agreeing. */
 .ai-progress-track {
-    width: 300px;
     height: 6px;
     border-radius: 3px;
     background-color: rgba(255, 255, 255, 0.09);

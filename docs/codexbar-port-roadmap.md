@@ -178,6 +178,15 @@ you drill into a provider for its full card (CodexBar's Merge-Icons/Overview
 idea). `_addTabBar` / `_addOverviewRow` / `_addProviderDetail` in
 `extension.js`; togglable to the old `stacked` layout in Preferences.
 
+**Fixed card, honest meters**: the popup carries a fixed width (`.ai-menu`,
+390px) so every tab opens the same size instead of the card resizing around
+each tab's longest line; labels that outgrow it ellipsize. Meters are laid out
+by the `MeterBar` widget, which splits the track's *real* allocation in
+`vfunc_allocate` — St CSS has no percentage widths, and the previous hardcoded
+300px basis drew every bar short whenever the card was wider than that. Every
+tab also ends with the same tail (7-day sparkline scoped to the tab's provider,
+poller footer, Preferences).
+
 **Brand icons** (`extension/icons/*-symbolic.svg`, see `icons/NOTICE`):
 recolorable simple-icons SVGs (CC0) for Claude / Gemini / OpenCode plus an
 original terminal glyph for Codex (OpenAI's marks left simple-icons at the

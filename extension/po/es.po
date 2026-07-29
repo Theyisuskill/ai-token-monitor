@@ -39,11 +39,11 @@ msgid "data from %s ago"
 msgstr "datos de hace %s"
 
 #, javascript-format
-msgid "pace %s%% · lasts to reset"
-msgstr "ritmo %s%% · aguanta al reset"
+msgid "pace %s%%"
+msgstr "ritmo %s%%"
 
 #, javascript-format
-msgid "pace +%s%% · running hot"
+msgid "pace +%s%% · hot"
 msgstr "ritmo +%s%% · acelerado"
 
 #, javascript-format

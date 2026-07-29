@@ -9,6 +9,7 @@ import GLib from 'gi://GLib';
 import Gio from 'gi://Gio';
 import St from 'gi://St';
 import Clutter from 'gi://Clutter';
+import Pango from 'gi://Pango';
 
 import {Extension, gettext as _} from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
@@ -43,10 +44,8 @@ const MonitorProxy = Gio.DBusProxy.makeProxyWrapper(MONITOR_IFACE);
 // Opening the menu always forces a fresh rescan, so this is just a safety net.
 const REFRESH_INTERVAL_S = 120;
 
-// St CSS cannot size widgets with percentage widths, so the progress fill is
-// computed in pixels against this fixed track width (must match the
-// .ai-progress-track width in stylesheet.css).
-const TRACK_WIDTH = 300;
+// Shortest visible fill, so a 1% bar still reads as "started, barely".
+const MIN_FILL_PX = 4;
 
 // Weekly window span, for the pace line on a real weekly bar.
 const WEEK_SPAN_S = 7 * 24 * 3600;
@@ -110,10 +109,20 @@ function formatCost(v) {
     return `$${(Number.isFinite(v) ? v : 0).toFixed(2)}`;
 }
 
-/** Fill %s placeholders left-to-right (tiny printf for translated strings). */
+/** Fill %s placeholders left-to-right (tiny printf for translated strings).
+ * `%%` collapses to a literal `%`, as printf does — several strings end in a
+ * percent sign ("pace %s%%") and would otherwise render it doubled. */
 function fmt(template, ...args) {
     let i = 0;
-    return template.replace(/%s/g, () => String(args[i++]));
+    return template.replace(/%[s%]/g, m => m === '%%' ? '%' : String(args[i++]));
+}
+
+/** Truncate with an ellipsis instead of pushing the popup wider: the menu has
+ * a fixed width (.ai-menu), so a long translation or an extra detail clause
+ * must give way rather than overflow the card. */
+function ellipsize(label) {
+    label.clutter_text.ellipsize = Pango.EllipsizeMode.END;
+    return label;
 }
 
 function severityClass(pct) {
@@ -244,10 +253,63 @@ function paceText(usedPct, resetsAt, spanSeconds) {
     if (elapsed < spanSeconds * 0.03)
         return null;  // too early in the window to be meaningful
     const diff = Math.round(usedPct - elapsed / spanSeconds * 100);
+    // Kept terse so the subtitle fits the card without eliding: the sign says
+    // which side of the even-pace line you are on, and `hot` tints it amber.
     return diff <= 0
-        ? {text: fmt(_('pace %s%% · lasts to reset'), diff), hot: false}
-        : {text: fmt(_('pace +%s%% · running hot'), diff), hot: true};
+        ? {text: fmt(_('pace %s%%'), diff), hot: false}
+        : {text: fmt(_('pace +%s%% · hot'), diff), hot: true};
 }
+
+/** A pill meter that splits its REAL allocated width between segments by
+ * fraction. St CSS has no percentage widths, so the split happens in allocate
+ * instead of being baked into pixels at build time — the bar then reads the
+ * same as the percentage beside it whatever width the popup ends up with. */
+const MeterBar = GObject.registerClass(
+class MeterBar extends St.Widget {
+    /** segments: [{fraction, styleClass, style}] — drawn left to right.
+     * fillsTrack: the fractions add up to 1 (a stacked split), so the last
+     * segment may absorb the rounding and close the bar exactly. */
+    _init(segments, {fillsTrack = false} = {}) {
+        super._init({style_class: 'ai-progress-track', x_expand: true});
+        this._fillsTrack = fillsTrack;
+        this._segments = segments.filter(s => s.fraction > 0);
+        for (const s of this._segments) {
+            s.actor = new St.Widget({
+                style_class: s.styleClass,
+                style: s.style ?? null,
+            });
+            this.add_child(s.actor);
+        }
+    }
+
+    /** The first segment's actor — the caller animates it on map. */
+    get firstSegment() {
+        return this._segments[0]?.actor ?? null;
+    }
+
+    vfunc_allocate(box) {
+        this.set_allocation(box);
+        const content = this.get_theme_node().get_content_box(box);
+        const total = content.x2 - content.x1;
+        let x = content.x1;
+        this._segments.forEach((s, i) => {
+            const last = i === this._segments.length - 1;
+            const width = last && this._fillsTrack
+                ? content.x2 - x
+                : Math.max(MIN_FILL_PX, Math.round(total * s.fraction));
+            // Clamp both edges: many tiny segments each rounded up to
+            // MIN_FILL_PX could otherwise walk past the end of the track.
+            const x1 = Math.min(x, content.x2);
+            s.actor.allocate(new Clutter.ActorBox({
+                x1,
+                y1: content.y1,
+                x2: Math.max(x1, Math.min(content.x2, x + width)),
+                y2: content.y2,
+            }));
+            x += width;
+        });
+    }
+});
 
 const ProgressBarRow = GObject.registerClass(
 class ProgressBarRow extends PopupMenu.PopupBaseMenuItem {
@@ -280,11 +342,11 @@ class ProgressBarRow extends PopupMenu.PopupBaseMenuItem {
         // A teal "live" dot marks a bar sourced from the provider's real
         // limit rather than the local estimate.
         const titleRow = new St.BoxLayout();
-        titleRow.add_child(new St.Label({
+        titleRow.add_child(ellipsize(new St.Label({
             text: title,
             style_class: 'ai-progress-title',
             x_expand: true,
-        }));
+        })));
         if (real && realDot) {
             // Teal dot = fresh provider data; grey = the poller is failing
             // and this is the last % it managed to fetch. realDot=false lets
@@ -301,25 +363,20 @@ class ProgressBarRow extends PopupMenu.PopupBaseMenuItem {
             style_class: `ai-progress-percent ai-text-${sev}`,
         }));
 
-        // Track + fill. Fill width is computed in px (St has no % widths).
-        // While usage is healthy the fill wears the tool's brand color; past
-        // 70/90% the severity classes (amber/red) take over — danger wins.
-        const track = new St.BoxLayout({style_class: 'ai-progress-track'});
-        const fillWidth = pct > 0
-            ? Math.max(4, Math.round(TRACK_WIDTH * pct / 100))
-            : 0;
+        // Track + fill. MeterBar sizes the fill from the track's real width,
+        // so the bar always matches the percentage printed above it.
         // Healthy fill wears CodexBar's teal (.ai-fill-ok); the warn/danger
         // severities take over past 70/90%. The tool's brand color lives on
         // the header dot, so the meters stay uniform like CodexBar's.
-        const fill = new St.BoxLayout({
-            style_class: `ai-progress-fill ai-fill-${sev}`,
-        });
-        fill.set_style(`width: ${fillWidth}px;`);
-        track.add_child(fill);
+        const track = new MeterBar([{
+            fraction: pct / 100,
+            styleClass: `ai-progress-fill ai-fill-${sev}`,
+        }]);
+        const fill = track.firstSegment;
 
         // Fill-in sweep on first map (every menu open rebuilds the rows). A
-        // paint-level scale, so the CSS width above keeps owning the layout.
-        if (fillWidth > 0 && St.Settings.get().enable_animations) {
+        // paint-level scale, so the allocation above keeps owning the layout.
+        if (fill && St.Settings.get().enable_animations) {
             fill.set_pivot_point(0, 0.5);
             fill.scale_x = 0;
             const mapId = fill.connect('notify::mapped', () => {
@@ -351,12 +408,13 @@ class ProgressBarRow extends PopupMenu.PopupBaseMenuItem {
             if (extra)
                 detail += `  ·  ${extra}`;
         }
-        const subtitle = new St.Label({
+        const subtitle = ellipsize(new St.Label({
             text: detail,
+            x_expand: true,
             style_class: extraWarn
                 ? 'ai-progress-subtitle ai-text-warn'
                 : 'ai-progress-subtitle',
-        });
+        }));
 
         vbox.add_child(titleRow);
         vbox.add_child(track);
@@ -417,6 +475,9 @@ class Indicator extends PanelMenu.Button {
         // diffed to announce "fresh window" when one expires.
         this._lastSessions = new Map();
         this._resetTimerId = 0;
+        // Fixed card width (.ai-menu): every tab then opens the same size
+        // instead of the popup resizing itself around each tab's longest line.
+        this.menu.box.add_style_class_name('ai-menu');
         // Switcher: which tab is open — 'summary' (unified KPI view) or a tool
         // id (that provider's detailed card). Persists while the indicator
         // lives so reopening the menu keeps your place.
@@ -767,10 +828,12 @@ class Indicator extends PanelMenu.Button {
 
     /** Week-over-week spend change in %: the last 7 calendar days vs the 7
      * before them, from the daemon's 14-day daily series. Null until the
-     * previous week has any spend to compare against. */
-    _weekDelta() {
+     * previous week has any spend to compare against. With `toolId` the
+     * comparison is scoped to that provider (its own tab's sparkline). */
+    _weekDelta(toolId = null) {
         const byDay = new Map(
-            (this._snapshot?.daily ?? []).map(d => [d.day, d.cost_usd ?? 0]));
+            (this._snapshot?.daily ?? []).map(d => [d.day,
+                (toolId ? d.by_tool?.[toolId] : d.cost_usd) ?? 0]));
         if (!byDay.size)
             return null;
         const dayCost = ago =>
@@ -918,21 +981,19 @@ class Indicator extends PanelMenu.Button {
             vertical: true, x_expand: true,
             style_class: 'ai-progress-container',
         });
-        const track = new St.BoxLayout({style_class: 'ai-progress-track'});
-        const widths = split.map(r =>
-            Math.max(2, Math.round(TRACK_WIDTH * r.cost / total)));
-        widths[0] += TRACK_WIDTH - widths.reduce((a, b) => a + b, 0);
-        split.forEach((r, i) => {
-            const seg = new St.BoxLayout({style_class: 'ai-split-seg'});
-            // St doesn't clip children by the parent's radius, so round only
-            // the outer corners of the first/last segment.
+        // St doesn't clip children by the parent's radius, so round only the
+        // outer corners of the first/last segment. Widths come from the
+        // meter's own allocation, so the split always spans the full track.
+        const track = new MeterBar(split.map((r, i) => {
             const l = i === 0 ? 3 : 0;
             const rr = i === split.length - 1 ? 3 : 0;
-            seg.set_style(`background-color: ${toolStyle(r.id).color}; ` +
-                `width: ${widths[i]}px; ` +
-                `border-radius: ${l}px ${rr}px ${rr}px ${l}px;`);
-            track.add_child(seg);
-        });
+            return {
+                fraction: r.cost / total,
+                styleClass: 'ai-split-seg',
+                style: `background-color: ${toolStyle(r.id).color}; ` +
+                    `border-radius: ${l}px ${rr}px ${rr}px ${l}px;`,
+            };
+        }), {fillsTrack: true});
 
         const legend = new St.BoxLayout({style_class: 'ai-legend'});
         for (const r of split) {
@@ -967,15 +1028,17 @@ class Indicator extends PanelMenu.Button {
 
     _addKeyValueRow(label, value, note = '', noteClass = 'ai-kv-note') {
         const row = new PopupMenu.PopupBaseMenuItem({reactive: false});
-        row.add_child(new St.Label({
+        row.add_child(ellipsize(new St.Label({
             text: label, style_class: 'ai-model-name', x_expand: true,
-        }));
-        row.add_child(new St.Label({text: value, style_class: 'ai-model-cost'}));
+        })));
+        row.add_child(ellipsize(new St.Label({
+            text: value, style_class: 'ai-model-cost',
+        })));
         if (note) {
-            row.add_child(new St.Label({
+            row.add_child(ellipsize(new St.Label({
                 text: note, style_class: noteClass,
                 y_align: Clutter.ActorAlign.CENTER,
-            }));
+            })));
         }
         this.menu.addMenuItem(row);
     }
@@ -1063,11 +1126,11 @@ class Indicator extends PanelMenu.Button {
         // to the dollar estimate — say so, with the poller's own reason.
         if (live?.status && live.status !== 'ok') {
             const err = new PopupMenu.PopupBaseMenuItem({reactive: false});
-            err.add_child(new St.Label({
+            err.add_child(ellipsize(new St.Label({
                 text: fmt(_('live limits unavailable: %s'), String(live.status)),
                 style_class: 'ai-live-status',
                 x_expand: true,
-            }));
+            })));
             this.menu.addMenuItem(err);
         }
 
@@ -1223,9 +1286,11 @@ class Indicator extends PanelMenu.Button {
         // at a time — the compact CodexBar-style view; "stacked" lists every
         // provider's full section at once (the original behaviour).
         const layout = this._snapshot.ui?.layout ?? 'switcher';
-        // Provider tabs stay focused on the card; the links, sparkline,
-        // footer and Preferences all live on the Summary tab only.
-        let showTail = true;
+        // Every tab ends with the same tail — 7-day sparkline, footer,
+        // Preferences — so switching tabs swaps the card's content without
+        // reshaping the popup. On a provider tab the tail is scoped to that
+        // provider; `tailTool` carries which one (null = all).
+        let tailTool = null;
         if (layout === 'stacked') {
             active.forEach((id, index) => {
                 if (index > 0)
@@ -1242,30 +1307,29 @@ class Indicator extends PanelMenu.Button {
                 sel = this._selected = 'summary';
             this._addTabBar(active, sel);
             this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
-            if (sel === 'summary')
+            if (sel === 'summary') {
                 this._addSummary(active);
-            else
+            } else {
                 this._addProviderDetail(sel);
-            showTail = sel === 'summary';
+                tailTool = sel;
+            }
         }
 
-        if (!showTail)
-            return;
-
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
-        this._addSparkline();
+        this._addSparkline(tailTool);
         // Footer: poller health on the left (only when something is failing —
         // the spend numbers already live in the Summary KPIs), update age on
-        // the right.
+        // the right. A provider tab only reports its own poller.
         const failing = Object.entries(this._snapshot.live ?? {})
-            .filter(([, v]) => v?.status && v.status !== 'ok')
+            .filter(([tool, v]) => (!tailTool || tool === tailTool) &&
+                v?.status && v.status !== 'ok')
             .map(([tool, v]) => `${toolStyle(tool).short}: ${v.status}`);
         const footer = new PopupMenu.PopupBaseMenuItem({reactive: false});
-        footer.add_child(new St.Label({
+        footer.add_child(ellipsize(new St.Label({
             text: failing.length ? `⚠ ${failing.join('  ·  ')}` : '',
             style_class: 'ai-footer ai-text-warn',
             x_expand: true,
-        }));
+        })));
         const updatedAgo = Math.max(
             0, Date.now() / 1000 - (this._snapshot.updated ?? 0));
         footer.add_child(new St.Label({
@@ -1290,28 +1354,37 @@ class Indicator extends PanelMenu.Button {
     /** Mini bar chart of the last 7 days' spend, stacked per tool in brand
      * colors. Always renders seven labeled day slots (empty days get a dim
      * baseline stub) so the shape reads as a calendar week even with sparse
-     * data, and a header anchors the scale (tallest bar = peak day). */
-    _addSparkline() {
+     * data, and a header anchors the scale (tallest bar = peak day).
+     * With `toolId` the whole chart is scoped to one provider — the same tail
+     * every tab gets, just measuring that tab's tool. */
+    _addSparkline(toolId = null) {
         const byDay = new Map(
             (this._snapshot.daily ?? []).map(d => [d.day, d]));
         if (!byDay.size)
             return;
 
+        const dayCost = data => (toolId
+            ? data?.by_tool?.[toolId]
+            : data?.cost_usd) ?? 0;
         const days = [];
         for (let i = 6; i >= 0; i--) {
             const date = new Date(Date.now() - i * 86400000);
             days.push({date, data: byDay.get(localDayKey(date)), today: i === 0});
         }
-        const max = Math.max(...days.map(d => d.data?.cost_usd ?? 0), 0.01);
-        const tools = this._activeTools();
+        const max = Math.max(...days.map(d => dayCost(d.data)), 0.01);
+        const tools = toolId ? [toolId] : this._activeTools();
 
         const title = new PopupMenu.PopupBaseMenuItem({reactive: false});
-        title.add_child(new St.Label({
-            text: _('Last 7 days'),
+        title.add_child(ellipsize(new St.Label({
+            // On a provider tab, name the provider so the scoped chart can't
+            // be misread as the cross-provider one from Summary.
+            text: toolId
+                ? `${toolStyle(toolId).short} · ${_('Last 7 days')}`
+                : _('Last 7 days'),
             style_class: 'ai-progress-title',
             x_expand: true,
-        }));
-        const delta = this._weekDelta();
+        })));
+        const delta = this._weekDelta(toolId);
         if (delta !== null) {
             title.add_child(new St.Label({
                 text: `${delta >= 0 ? '↑' : '↓'}${Math.abs(Math.round(delta))}%   `,
@@ -1357,10 +1430,10 @@ class Indicator extends PanelMenu.Button {
                 }));
                 drew = true;
             }
-            if (!drew && data?.cost_usd > 0) {  // old daemon without by_tool
+            if (!drew && dayCost(data) > 0) {  // old daemon without by_tool
                 bars.add_child(new St.Widget({
                     style_class: 'ai-spark-bar',
-                    style: `height: ${Math.max(2, Math.round(22 * data.cost_usd / max))}px;`,
+                    style: `height: ${Math.max(2, Math.round(22 * dayCost(data) / max))}px;`,
                     x_expand: true,
                 }));
                 drew = true;

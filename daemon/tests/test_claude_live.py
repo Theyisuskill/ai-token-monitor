@@ -6,21 +6,36 @@ missing scope, expired token) all return before any HTTP request.
 
 import json
 import time
+from datetime import datetime, timedelta, timezone
 
 from ai_token_monitor.live.claude import ClaudeLimitsPoller, normalize_usage
 
+
+def _iso_in(hours, micros="469219"):
+    """A real ISO-8601 reset stamp `hours` from now. Anchoring the fixture to
+    the clock instead of a literal date keeps "resets in the future" assertions
+    true forever — a hardcoded 2026-07-16 quietly turns the test red once it
+    passes."""
+    when = datetime.now(timezone.utc) + timedelta(hours=hours)
+    return when.replace(microsecond=int(micros)).isoformat()
+
+
+FIVE_HOUR_RESET = _iso_in(2)
+WEEKLY_RESET = _iso_in(72, "469249")
+SCOPED_RESET = _iso_in(72, "469572")
+
 # Trimmed real response shape from GET /api/oauth/usage (Max 20x account).
 REAL_PAYLOAD = {
-    "five_hour": {"utilization": 0.0, "resets_at": "2026-07-12T16:30:00.469219+00:00"},
-    "seven_day": {"utilization": 26.0, "resets_at": "2026-07-16T00:00:00.469249+00:00"},
+    "five_hour": {"utilization": 0.0, "resets_at": FIVE_HOUR_RESET},
+    "seven_day": {"utilization": 26.0, "resets_at": WEEKLY_RESET},
     "extra_usage": {"is_enabled": False, "utilization": None},
     "limits": [
         {"kind": "session", "group": "session", "percent": 0, "is_active": False,
-         "resets_at": "2026-07-12T16:30:00.469219+00:00", "scope": None},
+         "resets_at": FIVE_HOUR_RESET, "scope": None},
         {"kind": "weekly_all", "group": "weekly", "percent": 26, "is_active": True,
-         "resets_at": "2026-07-16T00:00:00.469249+00:00", "scope": None},
+         "resets_at": WEEKLY_RESET, "scope": None},
         {"kind": "weekly_scoped", "group": "weekly", "percent": 21, "is_active": False,
-         "resets_at": "2026-07-16T00:00:00.469572+00:00",
+         "resets_at": SCOPED_RESET,
          "scope": {"model": {"id": None, "display_name": "Fable"}}},
     ],
 }
