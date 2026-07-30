@@ -16,6 +16,7 @@ the snapshot on the main thread. It must never raise — every failure becomes a
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import Any, ClassVar
 
 # How long the last OK poll result may keep serving data once the poller
@@ -23,6 +24,13 @@ from typing import Any, ClassVar
 # blank the provider-real bars — the UI would flash back to the much lower
 # dollar estimate — but data older than this is no better than the estimate.
 LAST_OK_TTL_S = 30 * 60.0
+
+#: Statuses that mean "nothing to report", not "something went wrong". A tool
+#: you simply aren't running has no real limits to show, and saying so in amber
+#: every time you open the popup is noise the user cannot act on — it trains
+#: them to ignore the warning that does matter. The UI hides these; the journal
+#: logs them at INFO instead of WARNING, and `--live` still prints them.
+QUIET_STATUSES = frozenset({"not_running", "not_configured", "disabled"})
 
 
 def effective_live(latest: dict[str, Any], last_ok: dict[str, Any] | None,
@@ -56,9 +64,26 @@ class LivePoller(ABC):
     name: ClassVar[str]
     #: The ``UsageRecord.tool`` whose snapshot windows this augments.
     tool: ClassVar[str]
+    #: Files whose presence means "the user actually has this tool set up".
+    #: Only consulted for ``enabled: auto`` — see ``is_available``.
+    credential_paths: ClassVar[tuple[str, ...]] = ()
+    #: Settings key holding a user override for the first credential path.
+    credential_setting: ClassVar[str] = "credentials"
 
     def __init__(self, settings: dict[str, Any]):
         self.settings = settings
+
+    @classmethod
+    def is_available(cls, settings: dict[str, Any]) -> bool:
+        """Whether this provider looks set up on this machine.
+
+        Backs ``enabled: auto``: a poller that costs nothing when the tool is
+        absent should not have to be turned on by hand by everyone who does
+        use it. Presence is judged by the credential the poller would read.
+        """
+        override = settings.get(cls.credential_setting)
+        paths = (str(override),) if override else cls.credential_paths
+        return any(Path(p).expanduser().exists() for p in paths)
 
     @property
     def interval(self) -> int:

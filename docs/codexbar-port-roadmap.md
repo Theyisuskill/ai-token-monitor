@@ -187,6 +187,27 @@ by the `MeterBar` widget, which splits the track's *real* allocation in
 tab also ends with the same tail (7-day sparkline scoped to the tab's provider,
 poller footer, Preferences).
 
+**History tab** (icon-only, last in the tab row): the other half of the app —
+the windows above mirror provider rate limits, this looks backwards over the
+whole database. 30 days of daily spend, calendar months with a month-over-month
+delta (suppressed against the oldest month in the series, which the lookback
+truncates — otherwise you get meaningless "+7811%" jumps), the period's model
+mix as a stacked bar in shades of each model's provider color, and the most
+recent sessions. Served by a separate `GetHistory(period)` D-Bus method rather
+than the snapshot, since the snapshot is re-emitted on every debounced usage
+update; the extension fetches it lazily and caches it for a minute. Same data
+from the CLI via `--history` / `--sessions`. `session_id` had been recorded
+since the first release and never read back until now.
+
+**Quiet poller states**: `live.<tool>.quiet` marks statuses that mean "nothing
+to report" rather than "something broke" (`not_running`, `not_configured`,
+`disabled`). The Antigravity poller downgrades a stale stored credential to
+`not_running` when no loopback answered — agy isn't running, so its expired
+login is expected, not an error worth an amber warning; the reason survives in
+`detail` for `--live`. Those states log at INFO, so a WARNING in the journal
+always means a real failure. `live_limits.<name>.enabled` also accepts `auto`
+(on iff the provider's credential exists), which is now the Codex default.
+
 **Brand icons** (`extension/icons/*-symbolic.svg`, see `icons/NOTICE`):
 recolorable simple-icons SVGs (CC0) for Claude / Gemini / OpenCode plus an
 original terminal glyph for Codex (OpenAI's marks left simple-icons at the

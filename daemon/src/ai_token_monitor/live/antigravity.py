@@ -29,8 +29,14 @@ Two data paths, tried in order:
 
 2. GOOGLE OAUTH FALLBACK. Read ``~/.gemini/oauth_creds.json``
    (``{access_token, refresh_token, id_token, expiry_date(ms), scope}``).
-   READ-ONLY: if ``expiry_date`` is past, report ``token_expired`` and do NOT
-   refresh/rewrite the file (the CLI owns it). Otherwise POST::
+   READ-ONLY: the file is never rewritten — the CLI owns it. A past
+   ``expiry_date`` can be refreshed *in memory* (Google's refresh tokens are
+   reusable, so spending one doesn't invalidate the CLI's copy), but only when
+   ``oauth_client_id``/``oauth_client_secret`` are configured; without them the
+   status stays ``token_expired``. Since path 1 already failed at that point,
+   Antigravity isn't running either, so ``poll()`` downgrades a stale
+   credential to the silent ``not_running`` (reason kept in ``detail``) rather
+   than nagging about a tool the user isn't using. Otherwise POST::
 
        POST https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota
        Authorization: Bearer <access_token>
@@ -52,6 +58,7 @@ import re
 import ssl
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -74,9 +81,15 @@ _CSRF_FLAGS = ("--csrf_token", "--extension_server_csrf_token")
 # Google OAuth (Cloud Code Private API) endpoints.
 QUOTA_URL = "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota"
 LOAD_CODE_ASSIST_URL = "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist"
+GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
+# Refresh a little early: a token that expires mid-request is a wasted poll.
+TOKEN_SKEW_S = 60.0
 GEMINI_CRED = "~/.gemini/oauth_creds.json"
 GEMINI_SETTINGS = "~/.gemini/settings.json"
 SKIP_AUTH_TYPES = {"api-key", "gemini-api-key", "vertex-ai"}
+#: Fallback statuses that mean "the stored login is stale", as opposed to "the
+#: request failed". Only meaningful when the loopback found nothing — see poll().
+CREDENTIAL_STALE_STATUSES = frozenset({"token_expired", "unauthorized"})
 
 # Process command markers that identify an Antigravity language server.
 _PROC_COMMS = {"code", "antigravity", "antigravity-cli", "agy", "language_server"}
@@ -260,6 +273,23 @@ def normalize_oauth_quota(payload: dict[str, Any], plan_tier: str | None) -> dic
             "windows": windows, "scoped": scoped, "extra_usage": None}
 
 
+def normalize_token_response(payload: Any, now: float) -> dict[str, Any] | None:
+    """Map Google's token endpoint response to ``{access_token, expires_at}``.
+
+    Pure, so the refresh path is unit-testable without touching the network.
+    Returns None for anything that isn't a usable bearer token.
+    """
+    if not isinstance(payload, dict):
+        return None
+    token = payload.get("access_token")
+    if not isinstance(token, str) or not token:
+        return None
+    expires_in = payload.get("expires_in")
+    if not isinstance(expires_in, (int, float)) or expires_in <= 0:
+        expires_in = 3600.0
+    return {"access_token": token, "expires_at": now + float(expires_in)}
+
+
 def parse_plan_tier(payload: dict[str, Any]) -> str | None:
     """Pull a human plan/tier label out of a ``GetUserStatus`` response."""
     if not isinstance(payload, dict):
@@ -422,6 +452,9 @@ class AntigravityLimitsPoller(LivePoller):
     def __init__(self, settings: dict[str, Any]):
         super().__init__(settings)
         self._ssl_ctx = ssl._create_unverified_context()  # loopback self-signed only
+        # In-memory only: {access_token, expires_at}. Never persisted — see
+        # _refresh_token.
+        self._token_cache: dict[str, Any] | None = None
 
     # -- loopback ----------------------------------------------------------- #
 
@@ -498,6 +531,14 @@ class AntigravityLimitsPoller(LivePoller):
 
     # -- Google OAuth fallback --------------------------------------------- #
 
+    @classmethod
+    def is_available(cls, settings: dict[str, Any]) -> bool:
+        # Not the base implementation: this poller's primary path is the local
+        # loopback (no credential at all), so "set up" means the Antigravity
+        # dot-dir exists, not that a usable token does.
+        home = Path(settings.get("home") or "~").expanduser()
+        return (home / ".gemini").is_dir()
+
     def _home(self) -> Path:
         return Path(self.settings.get("home") or "~").expanduser()
 
@@ -561,6 +602,63 @@ class AntigravityLimitsPoller(LivePoller):
                     return value.strip()
         return None
 
+    def _oauth_client(self) -> tuple[str, str] | None:
+        """The OAuth client the refresh grant is presented as, from config.
+
+        Deliberately not auto-discovered: the Gemini CLI's installed-app client
+        id/secret live inside its minified bundle, and digging them out of
+        another vendor's build would break on their next release and is not
+        something this package should ship. Set them yourself if you want the
+        refresh (see config.example.yaml); otherwise a stale token just means
+        the quota comes from the loopback when Antigravity runs.
+        """
+        cid = self.settings.get("oauth_client_id")
+        secret = self.settings.get("oauth_client_secret")
+        if isinstance(cid, str) and cid and isinstance(secret, str):
+            return cid, secret
+        return None
+
+    def _refresh_token(self, refresh_token: str, timeout: float) -> str | None:
+        """Exchange the refresh token for an access token, IN MEMORY.
+
+        Never writes oauth_creds.json: the CLI owns that file, and Google's
+        refresh tokens are reusable, so spending one here doesn't invalidate
+        the copy on disk. The result is cached until it expires so a poll every
+        two minutes doesn't mean a token request every two minutes.
+        """
+        cached = self._token_cache
+        now = time.time()
+        if cached and cached["expires_at"] - TOKEN_SKEW_S > now:
+            return cached["access_token"]
+
+        client = self._oauth_client()
+        if client is None:
+            return None
+        client_id, client_secret = client
+        body = urllib.parse.urlencode({
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token,
+            "client_id": client_id,
+            "client_secret": client_secret,
+        }).encode("ascii")
+        req = urllib.request.Request(GOOGLE_TOKEN_URL, data=body, method="POST",
+                                     headers={
+                                         "Content-Type": "application/x-www-form-urlencoded",
+                                         "Accept": "application/json",
+                                         "User-Agent": "ai-token-monitor",
+                                     })
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+        except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
+            log.debug("antigravity: token refresh failed: %s", exc)
+            return None
+        fresh = normalize_token_response(payload, now)
+        if fresh is None:
+            return None
+        self._token_cache = fresh
+        return fresh["access_token"]
+
     def _poll_oauth(self) -> dict[str, Any] | None:
         auth = self._selected_auth_type()
         if auth in SKIP_AUTH_TYPES:
@@ -574,12 +672,17 @@ class AntigravityLimitsPoller(LivePoller):
         if not isinstance(token, str) or not token:
             return None
 
-        expiry = creds.get("expiry_date")
-        # Read-only: never refresh/rewrite the credential (the CLI owns it).
-        if isinstance(expiry, (int, float)) and time.time() * 1000.0 >= float(expiry):
-            return _empty("token_expired")
-
         timeout = float(self.settings.get("timeout_s", 15) or 15)
+        expiry = creds.get("expiry_date")
+        if isinstance(expiry, (int, float)) and time.time() * 1000.0 >= float(expiry):
+            # Stale access token. Refresh it in memory if an OAuth client is
+            # configured — READ-ONLY either way: the file is never rewritten.
+            refresh = creds.get("refresh_token")
+            token = (self._refresh_token(refresh, timeout)
+                     if isinstance(refresh, str) and refresh else None)
+            if not token:
+                return _empty("token_expired")
+
         project = self.settings.get("project") or self._load_project_id(token, timeout)
         body = {"project": project} if project else {}
         payload, error = self._oauth_post(QUOTA_URL, token, body, timeout)
@@ -599,9 +702,15 @@ class AntigravityLimitsPoller(LivePoller):
             if loopback is not None:
                 return loopback
             oauth = self._poll_oauth()
-            if oauth is not None:
-                return oauth
-            return _empty("not_running")
+            if oauth is None:
+                return _empty("not_running")
+            # No loopback answered, so Antigravity isn't running. A stored
+            # login that has merely gone stale is then the expected state, not
+            # a failure worth an amber warning the user can't act on — running
+            # agy fixes both at once. Keep the reason in `detail` for --live.
+            if oauth.get("status") in CREDENTIAL_STALE_STATUSES:
+                return _empty("not_running", detail=oauth.get("status"))
+            return oauth
         except Exception as exc:  # never raise out of a poller
             log.debug("antigravity poll failed: %s", exc)
             return _empty("bad_response")

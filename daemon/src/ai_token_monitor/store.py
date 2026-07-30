@@ -294,6 +294,112 @@ class Store:
             entry["cost_usd"] = round(entry["cost_usd"], 4)
         return list(days.values())
 
+    def monthly_series(self, since: float) -> list[dict]:
+        """Per-calendar-month totals (local time) with a per-tool breakdown.
+
+        Calendar months, unlike the 5h/weekly windows: this is cost tracking,
+        not a rate-limit mirror, and "what did July cost" is the question
+        people actually ask. Oldest first.
+        """
+        rows = self._db.execute(
+            """SELECT strftime('%Y-%m', ts, 'unixepoch', 'localtime') AS month,
+                      tool,
+                      COALESCE(SUM(input_tokens + output_tokens +
+                                   cache_read_tokens + cache_write_tokens), 0),
+                      COALESCE(SUM(cost_usd), 0),
+                      COUNT(*)
+               FROM usage WHERE ts >= ?
+               GROUP BY month, tool ORDER BY month""",
+            (since,),
+        ).fetchall()
+        months: dict[str, dict] = {}
+        for month, tool, tokens, cost, count in rows:
+            entry = months.setdefault(
+                month, {"month": month, "total_tokens": 0, "cost_usd": 0.0,
+                        "requests": 0, "by_tool": {}})
+            entry["total_tokens"] += tokens
+            entry["cost_usd"] += cost
+            entry["requests"] += count
+            entry["by_tool"][tool] = round(
+                entry["by_tool"].get(tool, 0.0) + cost, 4)
+        for entry in months.values():
+            entry["cost_usd"] = round(entry["cost_usd"], 4)
+        return list(months.values())
+
+    def sessions_recent(self, limit: int = 20, since: float = 0.0) -> list[dict]:
+        """Most recent conversations, newest first.
+
+        ``session_id`` has been recorded since the first release but nothing
+        ever read it back. Grouping by it turns the row-level history into the
+        unit people actually think in ("this morning's session cost $12").
+        Sessions with an empty id (a tool that doesn't report one) are skipped
+        rather than merged into one bogus mega-session.
+        """
+        rows = self._db.execute(
+            """SELECT tool, session_id, MIN(ts), MAX(ts), COUNT(*),
+                      COALESCE(SUM(cost_usd), 0),
+                      COALESCE(SUM(input_tokens + output_tokens +
+                                   cache_read_tokens + cache_write_tokens), 0)
+               FROM usage WHERE ts >= ? AND session_id != ''
+               GROUP BY tool, session_id
+               ORDER BY MAX(ts) DESC LIMIT ?""",
+            (since, max(1, int(limit))),
+        ).fetchall()
+        if not rows:
+            return []
+
+        # Top model per session, in one pass over the same window.
+        top: dict[tuple[str, str], tuple[str, float]] = {}
+        for tool, sid, model, cost in self._db.execute(
+            """SELECT tool, session_id, model, COALESCE(SUM(cost_usd), 0)
+               FROM usage WHERE ts >= ? AND session_id != ''
+               GROUP BY tool, session_id, model""",
+            (since,),
+        ):
+            key = (tool, sid)
+            if cost >= top.get(key, ("", -1.0))[1]:
+                top[key] = (model, cost)
+
+        return [
+            {"tool": tool, "session_id": sid,
+             "started": started, "ended": ended,
+             "duration_s": round(ended - started, 1),
+             "requests": count, "cost_usd": round(cost, 4),
+             "total_tokens": tokens,
+             "top_model": top.get((tool, sid), ("", 0.0))[0]}
+            for tool, sid, started, ended, count, cost, tokens in rows
+        ]
+
+    #: Days of daily detail each history period draws (None = the whole DB).
+    #: The monthly roll-up always covers HISTORY_MONTHS regardless, so the
+    #: month-over-month comparison is never empty just because you asked for
+    #: a short chart.
+    HISTORY_DAYS = {"week": 7, "month": 30, "quarter": 90, "all": None}
+    HISTORY_MONTHS = 12
+    HISTORY_SESSIONS = 20
+
+    def history(self, period: str = "month") -> dict:
+        """Daily series, calendar months, recent sessions and the model mix.
+
+        A read model over the tables above — no daemon state — so the CLI can
+        serve it without pulling in GLib.
+        """
+        now = time.time()
+        days = self.HISTORY_DAYS.get(period, 30)
+        since = 0.0 if days is None else now - days * 86400.0
+        result = self.summary(since)
+        return {
+            "period": period,
+            "since": since,
+            "daily": self.daily_series(since),
+            "monthly": self.monthly_series(now - self.HISTORY_MONTHS * 31 * 86400.0),
+            "sessions": self.sessions_recent(self.HISTORY_SESSIONS, since),
+            "models": self.models_summary(since, limit_per_tool=8),
+            "tools": result["tools"],
+            "totals": result["totals"],
+            "updated": now,
+        }
+
     def delete_tool(self, tool: str) -> int:
         """Drop every usage row for a tool (reparse migration). Returns rows."""
         cur = self._db.execute("DELETE FROM usage WHERE tool = ?", (tool,))

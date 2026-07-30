@@ -235,3 +235,25 @@ msgstr "Preset"
 
 msgid "Auto"
 msgstr "Auto"
+
+#. History tab (backwards-looking view).
+msgid "History"
+msgstr "Historia"
+
+msgid "Loading history…"
+msgstr "Cargando la historia…"
+
+#, javascript-format
+msgid "Last %s days"
+msgstr "Últimos %s días"
+
+msgid "By month"
+msgstr "Por mes"
+
+msgid "Recent sessions"
+msgstr "Sesiones recientes"
+
+#. %1 = duration (e.g. "3h 20m"), %2 = number of requests.
+#, javascript-format
+msgid "%s · %s req"
+msgstr "%s · %s pet."

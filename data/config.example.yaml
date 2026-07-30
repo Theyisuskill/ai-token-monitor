@@ -53,6 +53,8 @@ budget_mode: preset
 # usage API. It is READ-ONLY — it never rewrites that file. When live data is
 # present the popup shows a real bar (teal "live" dot) with the exact reset,
 # and the plan/budget scaling above is only used as the fallback.
+#   enabled: true | false | auto   ("auto" = on only if the provider's
+#   credential is actually on this machine, so an unused tool costs nothing).
 live_limits:
   claude_code:
     enabled: true      # set false to stay fully local (estimate-only)
@@ -67,9 +69,16 @@ live_limits:
     enabled: false
     interval_s: 120
     # ports: [40495, 42155]   # override /proc port discovery if needed
-  # OpenAI Codex CLI (~/.codex/auth.json). Off by default; enable if you use it.
+    # The OAuth fallback only works while ~/.gemini/oauth_creds.json holds a
+    # valid access token — i.e. shortly after you used the Gemini CLI. Give it
+    # an OAuth client and it will refresh that token IN MEMORY instead (the
+    # credential file is still never written). Use your own Google OAuth
+    # "Desktop app" client; nothing is auto-discovered from the installed CLI.
+    # oauth_client_id: "....apps.googleusercontent.com"
+    # oauth_client_secret: "..."
+  # OpenAI Codex CLI: on as soon as ~/.codex/auth.json exists, off otherwise.
   codex:
-    enabled: false
+    enabled: auto
     interval_s: 120
 
 # Optional. daily/weekly/monthly are informational only. Any per-tool key here

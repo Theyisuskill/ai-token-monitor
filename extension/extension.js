@@ -29,6 +29,10 @@ const MONITOR_IFACE = `
     <method name="GetSnapshot">
       <arg type="s" direction="out" name="snapshot"/>
     </method>
+    <method name="GetHistory">
+      <arg type="s" direction="in" name="period"/>
+      <arg type="s" direction="out" name="history"/>
+    </method>
     <method name="Refresh">
       <arg type="s" direction="out" name="snapshot"/>
     </method>
@@ -46,6 +50,13 @@ const REFRESH_INTERVAL_S = 120;
 
 // Shortest visible fill, so a 1% bar still reads as "started, barely".
 const MIN_FILL_PX = 4;
+
+// History (GetHistory) is fetched lazily and cached: it scans far more rows
+// than a snapshot, and nothing in it changes meaningfully minute to minute.
+const HISTORY_TTL_MS = 60 * 1000;
+const HISTORY_PERIOD = 'month';   // 30 days of daily detail
+const HISTORY_BAR_PX = 26;        // tallest bar in the history chart
+const HISTORY_SESSIONS_SHOWN = 5;
 
 // Weekly window span, for the pace line on a real weekly bar.
 const WEEK_SPAN_S = 7 * 24 * 3600;
@@ -123,6 +134,18 @@ function fmt(template, ...args) {
 function ellipsize(label) {
     label.clutter_text.ellipsize = Pango.EllipsizeMode.END;
     return label;
+}
+
+/** Lighten a #rrggbb toward white by `amount` (0–1).
+ * Used to tell apart same-provider segments in a stacked bar: St ignores a CSS
+ * `opacity` in an inline style, so the shade has to be a real color. */
+function lighten(hex, amount) {
+    const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex ?? '');
+    if (!m)
+        return hex;
+    const mix = c => Math.round(c + (255 - c) * Math.min(1, Math.max(0, amount)));
+    const [r, g, b] = m.slice(1).map(v => mix(parseInt(v, 16)));
+    return `#${[r, g, b].map(v => v.toString(16).padStart(2, '0')).join('')}`;
 }
 
 function severityClass(pct) {
@@ -478,10 +501,16 @@ class Indicator extends PanelMenu.Button {
         // Fixed card width (.ai-menu): every tab then opens the same size
         // instead of the popup resizing itself around each tab's longest line.
         this.menu.box.add_style_class_name('ai-menu');
-        // Switcher: which tab is open — 'summary' (unified KPI view) or a tool
-        // id (that provider's detailed card). Persists while the indicator
-        // lives so reopening the menu keeps your place.
+        // Switcher: which tab is open — 'summary' (unified KPI view), 'history'
+        // (the backwards-looking view) or a tool id (that provider's detailed
+        // card). Persists while the indicator lives so reopening the menu keeps
+        // your place.
         this._selected = 'summary';
+        // History is fetched on demand (GetHistory), not carried in the
+        // snapshot; `_historyAt` ages the cache, `_historyBusy` de-dupes calls.
+        this._history = null;
+        this._historyAt = 0;
+        this._historyBusy = false;
 
         this._rebuildMenu();
         this._initProxy();
@@ -575,6 +604,43 @@ class Indicator extends PanelMenu.Button {
         this._panelIcon.gicon = this._defaultPanelGicon;
         this._snapshot = null;
         this._rebuildMenu();
+    }
+
+    /** Fetch the history view unless a fresh copy is already cached or a call
+     * is in flight. Rebuilds the menu when it lands, so the History tab fills
+     * in without blocking the popup on a query over months of rows. */
+    _fetchHistory() {
+        if (!this._proxy || this._historyBusy)
+            return;
+        if (this._history && Date.now() - this._historyAt < HISTORY_TTL_MS)
+            return;
+        this._historyBusy = true;
+        this._proxy.GetHistoryRemote(HISTORY_PERIOD, (result, error) => {
+            this._historyBusy = false;
+            if (this._destroyed)
+                return;
+            if (error) {
+                if (!error.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.CANCELLED))
+                    console.warn(`[ai-token-monitor] GetHistory failed: ${error.message}`);
+                return;
+            }
+            let history;
+            try {
+                history = JSON.parse(result[0]);
+            } catch (e) {
+                console.error(`[ai-token-monitor] bad history: ${e}`);
+                return;
+            }
+            // An older daemon answers with {error: ...} rather than data.
+            if (history?.error) {
+                console.warn(`[ai-token-monitor] GetHistory: ${history.error}`);
+                return;
+            }
+            this._history = history;
+            this._historyAt = Date.now();
+            if (this._selected === 'history')
+                this._rebuildMenu();
+        }, this._cancellable);
     }
 
     _applySnapshot(json) {
@@ -791,15 +857,20 @@ class Indicator extends PanelMenu.Button {
         const item = new PopupMenu.PopupBaseMenuItem(
             {reactive: false, can_focus: false, style_class: 'ai-tabbar-item'});
         const row = new St.BoxLayout({style_class: 'ai-tabbar', x_expand: true});
-        const addTab = (id, label, dotColor) => {
+        const addTab = (id, label, dotColor, iconName = null, a11y = null) => {
             const btn = new St.Button({
                 style_class: sel === id ? 'ai-tab ai-tab-active' : 'ai-tab',
                 x_expand: false,
                 can_focus: true,
+                // An icon-only tab still has to announce itself to a screen
+                // reader, and the label is what it would have read.
+                accessible_name: a11y ?? label,
             });
             const box = new St.BoxLayout({style_class: 'ai-tab-box'});
-            const icon = dotColor
-                ? this._brandIcon(id, 'ai-tab-icon', dotColor) : null;
+            const icon = iconName
+                ? new St.Icon({icon_name: iconName, style_class: 'ai-tab-icon',
+                               y_align: Clutter.ActorAlign.CENTER})
+                : dotColor && this._brandIcon(id, 'ai-tab-icon', dotColor);
             if (icon) {
                 box.add_child(icon);
             } else if (dotColor) {
@@ -808,10 +879,12 @@ class Indicator extends PanelMenu.Button {
                     style_class: 'ai-tab-dot', y_align: Clutter.ActorAlign.CENTER,
                 }));
             }
-            box.add_child(new St.Label({
-                text: label, style_class: 'ai-tab-label',
-                y_align: Clutter.ActorAlign.CENTER,
-            }));
+            if (label) {
+                box.add_child(new St.Label({
+                    text: label, style_class: 'ai-tab-label',
+                    y_align: Clutter.ActorAlign.CENTER,
+                }));
+            }
             btn.set_child(box);
             btn.connect('clicked', () => {
                 this._selected = id;
@@ -822,8 +895,242 @@ class Indicator extends PanelMenu.Button {
         addTab('summary', _('Summary'), null);
         for (const id of active)
             addTab(id, toolStyle(id).short, toolStyle(id).color);
+        // Icon-only: with Summary plus a tab per provider the row is already
+        // close to the card's fixed width, and a sixth label would squeeze the
+        // rest. The stock symbolic reads as "recent" on every icon theme.
+        addTab('history', '', null, 'document-open-recent-symbolic', _('History'));
         item.add_child(row);
         this.menu.addMenuItem(item);
+    }
+
+    /** Backwards-looking tab: 30 days of spend, this month vs last, the
+     * period's model mix and the most recent sessions. Fed by GetHistory (not
+     * the snapshot) so the daemon only pays for it when you look. */
+    _addHistory() {
+        const history = this._history;
+        if (!history) {
+            const item = new PopupMenu.PopupBaseMenuItem({reactive: false});
+            item.add_child(new St.Label({
+                text: _('Loading history…'), style_class: 'ai-live-status',
+                x_expand: true,
+            }));
+            this.menu.addMenuItem(item);
+            return;
+        }
+
+        this._addHistoryChart(history);
+        this._addHistoryMonths(history);
+        this._addModelMix(history);
+        this._addSessions(history);
+    }
+
+    /** Every calendar day of the period, in order, paired with its row from
+     * the daemon (which only sends days that have usage). Idle days must keep
+     * their slot: bars packed together would put a gap-free wall where three
+     * days off actually were, and the axis dates would stop lining up. */
+    _historyDays(history) {
+        const byDay = new Map(
+            (history.daily ?? []).map(d => [d.day, d]));
+        if (!byDay.size)
+            return [];
+        const DAY_MS = 86400000;
+        // `since: 0` means "everything" — span from the first recorded day
+        // instead of from the epoch.
+        const first = history.since > 0
+            ? new Date(history.since * 1000)
+            : new Date(`${[...byDay.keys()].sort()[0]}T00:00:00`);
+        const today = new Date();
+        const count = Math.min(
+            120,
+            Math.max(1, Math.round((today - first) / DAY_MS) + 1));
+        const days = [];
+        for (let i = count - 1; i >= 0; i--) {
+            const date = new Date(today.getTime() - i * DAY_MS);
+            days.push({date, data: byDay.get(localDayKey(date))});
+        }
+        return days;
+    }
+
+    /** Daily spend for the period, one thin brand-colored bar per day. Only
+     * the ends and the peak are labeled — 30 date labels would be a smear. */
+    _addHistoryChart(history) {
+        const days = this._historyDays(history);
+        if (!days.length)
+            return;
+        const max = Math.max(...days.map(d => d.data?.cost_usd ?? 0), 0.01);
+        const tools = this._activeTools();
+        const peak = days.reduce((best, d) =>
+            ((d.data?.cost_usd ?? 0) > (best.data?.cost_usd ?? 0) ? d : best),
+        days[0]);
+
+        const title = new PopupMenu.PopupBaseMenuItem({reactive: false});
+        title.add_child(ellipsize(new St.Label({
+            text: fmt(_('Last %s days'), String(days.length)),
+            style_class: 'ai-progress-title', x_expand: true,
+        })));
+        const stamp = date => `${date.getDate()}/${date.getMonth() + 1}`;
+        // The peak's date belongs here, not on the axis: an arrow parked in
+        // the middle of a 31-slot row looks like it points at that bar.
+        title.add_child(new St.Label({
+            text: `${fmt(_('peak %s / day'), formatCost(max))} · ${stamp(peak.date)}`,
+            style_class: 'ai-progress-subtitle',
+        }));
+        this.menu.addMenuItem(title);
+
+        const item = new PopupMenu.PopupBaseMenuItem({reactive: false});
+        const vbox = new St.BoxLayout({vertical: true, x_expand: true});
+        const row = new St.BoxLayout({style_class: 'ai-spark-row', x_expand: true});
+        for (const day of days) {
+            const bars = new St.BoxLayout({
+                vertical: true, style_class: 'ai-spark-bars', x_expand: true,
+            });
+            bars.add_child(new St.Widget({y_expand: true}));  // bottom-align
+            let drew = false;
+            const byTool = day.data?.by_tool ?? {};
+            for (const tool of [...tools].reverse()) {
+                const cost = byTool[tool] ?? 0;
+                if (!(cost > 0))
+                    continue;
+                bars.add_child(new St.Widget({
+                    style_class: 'ai-spark-seg',
+                    style: `height: ${Math.max(1, Math.round(HISTORY_BAR_PX * cost / max))}px;` +
+                        ` background-color: ${toolStyle(tool).color};`,
+                    x_expand: true,
+                }));
+                drew = true;
+            }
+            if (!drew) {
+                bars.add_child(new St.Widget({
+                    style_class: 'ai-spark-empty', x_expand: true,
+                }));
+            }
+            row.add_child(bars);
+        }
+        vbox.add_child(row);
+
+        // Axis: just the ends — 31 labels would smear into each other.
+        const axis = new St.BoxLayout({x_expand: true});
+        axis.add_child(new St.Label({
+            text: stamp(days[0].date), style_class: 'ai-spark-day', x_expand: true,
+        }));
+        axis.add_child(new St.Label({
+            text: stamp(days[days.length - 1].date),
+            style_class: 'ai-spark-day', x_align: Clutter.ActorAlign.END,
+            x_expand: true,
+        }));
+        vbox.add_child(axis);
+        item.add_child(vbox);
+        this.menu.addMenuItem(item);
+    }
+
+    /** Calendar months, newest first, with a month-over-month delta on the
+     * current one. Calendar (not rolling) because "what did July cost" is the
+     * question people actually ask of a spend history. */
+    _addHistoryMonths(history) {
+        const months = [...(history.monthly ?? [])].reverse();
+        if (!months.length)
+            return;
+        this._addSectionLabel(_('By month'));
+
+        const monthName = key => {
+            const [y, m] = String(key).split('-').map(Number);
+            if (!Number.isFinite(m))
+                return String(key);
+            try {
+                return new Date(y, m - 1, 1).toLocaleDateString(
+                    undefined, {month: 'long', year: 'numeric'});
+            } catch {
+                return String(key);
+            }
+        };
+        months.slice(0, 3).forEach((month, i) => {
+            const prev = months[i + 1];
+            // Compare only against a month we know is whole. The oldest entry
+            // in the series is cut off by the lookback (or by when you started
+            // using the tool), so measuring against it invents changes like
+            // "+7811%" that say nothing about your spending. A sub-dollar
+            // baseline is meaningless for the same reason.
+            const trustworthy = prev && i + 1 < months.length - 1
+                && prev.cost_usd >= 1.0;
+            let note = '';
+            let noteClass = 'ai-kv-note';
+            if (trustworthy) {
+                const delta = Math.round(
+                    (month.cost_usd - prev.cost_usd) / prev.cost_usd * 100);
+                note = `${delta >= 0 ? '↑' : '↓'}${Math.abs(delta)}%`;
+                noteClass = delta >= 0
+                    ? 'ai-kv-note ai-text-warn' : 'ai-kv-note ai-delta-down';
+            }
+            this._addKeyValueRow(monthName(month.month),
+                                 formatCost(month.cost_usd), note, noteClass);
+        });
+    }
+
+    /** Which models the money went to over the period — the same stacked bar
+     * as the provider split, but keyed by model. */
+    _addModelMix(history) {
+        const models = Object.entries(history.models ?? {})
+            .flatMap(([tool, list]) => (list ?? []).map(m => ({...m, tool})))
+            .filter(m => m.cost_usd > 0)
+            .sort((a, b) => b.cost_usd - a.cost_usd)
+            .slice(0, 5);
+        if (models.length < 2)
+            return;  // a single model is a bar with one segment: no information
+        const total = models.reduce((sum, m) => sum + m.cost_usd, 0);
+        this._addSectionLabel(_('By model'));
+
+        const item = new PopupMenu.PopupBaseMenuItem({reactive: false});
+        const vbox = new St.BoxLayout({
+            vertical: true, x_expand: true, style_class: 'ai-progress-container',
+        });
+        // Progressively lighter shades of the owning tool's brand color: the
+        // bar still reads as "who" while splitting by "which model", and the
+        // legend below ties each shade back to a name.
+        const shade = (m, i) => lighten(toolStyle(m.tool).color, i * 0.22);
+        const track = new MeterBar(models.map((m, i) => {
+            const l = i === 0 ? 3 : 0;
+            const r = i === models.length - 1 ? 3 : 0;
+            return {
+                fraction: m.cost_usd / total,
+                styleClass: 'ai-split-seg',
+                style: `background-color: ${shade(m, i)}; ` +
+                    `border-radius: ${l}px ${r}px ${r}px ${l}px;`,
+            };
+        }), {fillsTrack: true});
+        vbox.add_child(track);
+        item.add_child(vbox);
+        this.menu.addMenuItem(item);
+
+        models.slice(0, 3).forEach((m, i) => {
+            this._addKeyValueRow(m.model, formatCost(m.cost_usd), '●',
+                                 'ai-kv-note', `color: ${shade(m, i)};`);
+        });
+    }
+
+    /** Recent conversations: when, how long, how much. The session id has been
+     * recorded since the first release and never shown until now. */
+    _addSessions(history) {
+        const sessions = (history.sessions ?? []).slice(0, HISTORY_SESSIONS_SHOWN);
+        if (!sessions.length)
+            return;
+        this._addSectionLabel(_('Recent sessions'));
+
+        for (const s of sessions) {
+            const start = new Date((s.started ?? 0) * 1000);
+            let when;
+            try {
+                when = start.toLocaleDateString(undefined,
+                                                {month: 'short', day: 'numeric'});
+                when += ` ${start.toLocaleTimeString(undefined,
+                    {hour: '2-digit', minute: '2-digit'})}`;
+            } catch {
+                when = '';
+            }
+            const label = `${toolStyle(s.tool).short} · ${when}`;
+            const note = fmt(_('%s · %s req'), spanStr(s.duration_s ?? 0),
+                             String(s.requests ?? 0));
+            this._addKeyValueRow(label, formatCost(s.cost_usd ?? 0), note);
+        }
     }
 
     /** Week-over-week spend change in %: the last 7 calendar days vs the 7
@@ -1026,7 +1333,10 @@ class Indicator extends PanelMenu.Button {
         this.menu.addMenuItem(item);
     }
 
-    _addKeyValueRow(label, value, note = '', noteClass = 'ai-kv-note') {
+    /** `noteStyle` inlines a color on the note — used for the legend swatch
+     * that ties a row to its segment in the stacked bar above it. */
+    _addKeyValueRow(label, value, note = '', noteClass = 'ai-kv-note',
+                    noteStyle = null) {
         const row = new PopupMenu.PopupBaseMenuItem({reactive: false});
         row.add_child(ellipsize(new St.Label({
             text: label, style_class: 'ai-model-name', x_expand: true,
@@ -1037,6 +1347,7 @@ class Indicator extends PanelMenu.Button {
         if (note) {
             row.add_child(ellipsize(new St.Label({
                 text: note, style_class: noteClass,
+                style: noteStyle ?? '',
                 y_align: Clutter.ActorAlign.CENTER,
             })));
         }
@@ -1124,7 +1435,9 @@ class Indicator extends PanelMenu.Button {
 
         // When the live poller is failing, the bars below silently fall back
         // to the dollar estimate — say so, with the poller's own reason.
-        if (live?.status && live.status !== 'ok') {
+        // `quiet` marks the states that aren't faults (the tool simply isn't
+        // running); nagging about those trains you to ignore the real ones.
+        if (live?.status && live.status !== 'ok' && !live.quiet) {
             const err = new PopupMenu.PopupBaseMenuItem({reactive: false});
             err.add_child(ellipsize(new St.Label({
                 text: fmt(_('live limits unavailable: %s'), String(live.status)),
@@ -1289,8 +1602,11 @@ class Indicator extends PanelMenu.Button {
         // Every tab ends with the same tail — 7-day sparkline, footer,
         // Preferences — so switching tabs swaps the card's content without
         // reshaping the popup. On a provider tab the tail is scoped to that
-        // provider; `tailTool` carries which one (null = all).
+        // provider; `tailTool` carries which one (null = all). History is the
+        // one exception: its whole card is a longer version of that chart, so
+        // `showSpark` drops the duplicate.
         let tailTool = null;
+        let showSpark = true;
         if (layout === 'stacked') {
             active.forEach((id, index) => {
                 if (index > 0)
@@ -1303,12 +1619,16 @@ class Indicator extends PanelMenu.Button {
             // Switcher: a Summary KPI tab plus one card per tool. Default to
             // Summary; keep the user's pick once they choose a tab.
             let sel = this._selected;
-            if (sel !== 'summary' && !active.includes(sel))
+            if (sel !== 'summary' && sel !== 'history' && !active.includes(sel))
                 sel = this._selected = 'summary';
             this._addTabBar(active, sel);
             this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
             if (sel === 'summary') {
                 this._addSummary(active);
+            } else if (sel === 'history') {
+                this._fetchHistory();  // no-op while a fresh copy is cached
+                this._addHistory();
+                showSpark = false;
             } else {
                 this._addProviderDetail(sel);
                 tailTool = sel;
@@ -1316,13 +1636,14 @@ class Indicator extends PanelMenu.Button {
         }
 
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
-        this._addSparkline(tailTool);
+        if (showSpark)
+            this._addSparkline(tailTool);
         // Footer: poller health on the left (only when something is failing —
         // the spend numbers already live in the Summary KPIs), update age on
         // the right. A provider tab only reports its own poller.
         const failing = Object.entries(this._snapshot.live ?? {})
             .filter(([tool, v]) => (!tailTool || tool === tailTool) &&
-                v?.status && v.status !== 'ok')
+                v?.status && v.status !== 'ok' && !v.quiet)
             .map(([tool, v]) => `${toolStyle(tool).short}: ${v.status}`);
         const footer = new PopupMenu.PopupBaseMenuItem({reactive: false});
         footer.add_child(ellipsize(new St.Label({

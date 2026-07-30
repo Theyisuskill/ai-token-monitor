@@ -24,6 +24,13 @@ owns that file and refreshes the token during normal use; if the access token
 is expired the poller simply reports a stale status and picks up the fresh
 token on the next poll, rather than racing Claude Code for the login (a bad
 write could sign the user out).
+
+It also does NOT refresh the token in memory, unlike the Antigravity poller.
+The risk is asymmetric: Claude Code rotates this file by itself whenever you
+use it, so `token_expired` here heals on its own within minutes, while an
+OAuth refresh grant that rotates its refresh token would leave the on-disk
+copy pointing at a spent one — trading a stale bar for a signed-out CLI.
+`effective_live` already carries the last good numbers across the gap.
 """
 
 from __future__ import annotations
@@ -132,6 +139,7 @@ def read_oauth(path: Path) -> dict[str, Any] | None:
 class ClaudeLimitsPoller(LivePoller):
     name = "claude_code"
     tool = "claude_code"
+    credential_paths = (DEFAULT_CRED,)
 
     def _cred_path(self) -> Path:
         return Path(self.settings.get("credentials", DEFAULT_CRED)).expanduser()

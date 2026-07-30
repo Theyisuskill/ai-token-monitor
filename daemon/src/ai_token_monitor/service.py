@@ -27,6 +27,7 @@ OBJECT_PATH = "/io/github/theyisuskill/AITokenMonitor"
 IFACE_NAME = "io.github.theyisuskill.AITokenMonitor1"
 
 VALID_PERIODS = ("1h", "5h", "24h", "today", "week", "month", "all")
+VALID_HISTORY_PERIODS = ("week", "month", "quarter", "all")
 
 
 @dbus_interface(IFACE_NAME)
@@ -44,6 +45,18 @@ class MonitorInterface:
 
     def GetSnapshot(self) -> Str:
         return json.dumps(self._daemon.snapshot())
+
+    def GetHistory(self, period: Str) -> Str:
+        """Backwards-looking series (daily, monthly, sessions, model mix).
+
+        Separate from GetSnapshot on purpose: this is comparatively expensive
+        and only the History view needs it, while the snapshot is pushed on
+        every usage update.
+        """
+        if period not in VALID_HISTORY_PERIODS:
+            return json.dumps({"error": f"unknown period {period!r}",
+                               "valid": list(VALID_HISTORY_PERIODS)})
+        return json.dumps(self._daemon.history(period))
 
     def Refresh(self) -> Str:
         """Force a rescan of all logs and return the resulting snapshot."""

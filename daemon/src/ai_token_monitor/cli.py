@@ -85,6 +85,34 @@ def waybar_status(store, cfg) -> dict:
     }
 
 
+def live_report(cfg) -> dict:
+    """Run every enabled poller once, synchronously, and report what happened.
+
+    Diagnostics: the daemon polls on a timer and only journals status
+    *transitions*, so "why is this bar an estimate?" otherwise means grepping
+    the journal at the right moment. Registered-but-disabled pollers are listed
+    too — "not enabled" is the answer often enough to be worth printing.
+    """
+    from . import live as live_mod
+
+    settings = cfg.live_limits
+    enabled = {p.name: p for p in live_mod.create_enabled(settings)}
+    pollers = {}
+    for name, cls in sorted(live_mod.registered().items()):
+        conf = settings.get(name) if isinstance(settings, dict) else None
+        conf = conf if isinstance(conf, dict) else {}
+        poller = enabled.get(name)
+        if poller is None:
+            pollers[name] = {"tool": cls.tool, "enabled": False,
+                             "configured": conf.get("enabled", False),
+                             "credential_present": cls.is_available(conf)}
+            continue
+        result = poller.poll()  # never raises, by contract
+        pollers[name] = {"tool": cls.tool, "enabled": True,
+                         "interval_s": poller.interval, **result}
+    return {"pollers": pollers}
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="ai-token-monitor",
@@ -106,8 +134,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--daily", metavar="PERIOD", dest="daily",
                         choices=("week", "month", "all"),
                         help="print a per-day JSON series and exit")
+    parser.add_argument("--history", metavar="PERIOD",
+                        choices=("week", "month", "quarter", "all"),
+                        help="print the backwards-looking view (daily series, "
+                             "calendar months, sessions, model mix) and exit")
+    parser.add_argument("--sessions", metavar="N", nargs="?", type=int,
+                        const=20, help="print the N most recent sessions "
+                                       "(default 20) as JSON and exit")
     parser.add_argument("--waybar", action="store_true",
                         help="print a Waybar custom-module JSON object and exit")
+    parser.add_argument("--live", action="store_true",
+                        help="poll every enabled live-limit poller once and "
+                             "print the raw result (diagnostics), then exit")
     args = parser.parse_args(argv)
 
     cfg = config_mod.load(args.config)
@@ -117,7 +155,15 @@ def main(argv: list[str] | None = None) -> int:
         format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
     )
 
-    if args.summary or args.daily or args.waybar:
+    if args.live:
+        # No store and no daemon: pollers only read a credential and the
+        # network, so this works even while the service is down.
+        json.dump(live_report(cfg), sys.stdout, indent=2, default=str)
+        print()
+        return 0
+
+    if (args.summary or args.daily or args.waybar or args.history
+            or args.sessions is not None):
         from .store import Store, period_start
 
         store = Store(cfg.database)
@@ -127,6 +173,10 @@ def main(argv: list[str] | None = None) -> int:
             elif args.summary:
                 result = store.summary(period_start(args.summary))
                 result["period"] = args.summary
+            elif args.history:
+                result = store.history(args.history)
+            elif args.sessions is not None:
+                result = {"sessions": store.sessions_recent(args.sessions)}
             else:
                 result = {"period": args.daily,
                           "days": store.daily_series(period_start(args.daily))}

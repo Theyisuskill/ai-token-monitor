@@ -186,11 +186,20 @@ class CodexLimitsPoller(LivePoller):
     name = "codex"
     tool = "codex"
 
-    def _cred_path(self) -> Path:
-        override = self.settings.get("credentials")
+    @staticmethod
+    def _resolve_cred(settings: dict[str, Any]) -> Path:
+        override = settings.get("credentials")
         if override:
             return Path(override).expanduser()
         return _codex_home() / "auth.json"
+
+    @classmethod
+    def is_available(cls, settings: dict[str, Any]) -> bool:
+        # Not the base implementation: the default path depends on $CODEX_HOME.
+        return cls._resolve_cred(settings).exists()
+
+    def _cred_path(self) -> Path:
+        return self._resolve_cred(self.settings)
 
     def poll(self) -> dict[str, Any]:
         tokens = read_tokens(self._cred_path())

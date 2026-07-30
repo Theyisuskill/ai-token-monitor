@@ -219,8 +219,10 @@ class Daemon:
             self._warn_plan_mismatch(tool, result.get("plan_tier"))
         if status != self._live_status.get(name):
             self._live_status[name] = status
-            if status == "ok":
-                log.info("live poller %s: ok", name)
+            if status == "ok" or status in live.QUIET_STATUSES:
+                # "not running" is a state, not a fault — INFO, so a WARNING in
+                # this log always means something actually broke.
+                log.info("live poller %s: %s", name, status)
             else:
                 log.warning("live poller %s: %s", name, status)
         self._schedule_emit()
@@ -277,6 +279,10 @@ class Daemon:
             status[tool] = {"status": res.get("status"),
                             "fetched_at": res.get("fetched_at"),
                             "plan_tier": (data or res).get("plan_tier")}
+            # `quiet` = "nothing to report", not "something is wrong": the UI
+            # skips its amber note so the warning keeps meaning something.
+            if res.get("status") in live.QUIET_STATUSES:
+                status[tool]["quiet"] = True
             if stale:
                 status[tool]["stale"] = True
                 status[tool]["data_fetched_at"] = (data or {}).get("fetched_at")
@@ -393,6 +399,16 @@ class Daemon:
         result = self.store.summary(period_start(period))
         result["period"] = period
         return result
+
+    def history(self, period: str = "month") -> dict:
+        """Backwards-looking view — see Store.history().
+
+        Deliberately NOT part of snapshot(): the snapshot is re-emitted on
+        every debounced usage update, and nobody needs 90 days of series
+        recomputed to redraw a progress bar. The UI asks for this when the
+        History tab is opened.
+        """
+        return self.store.history(period)
 
     _EMPTY_ENTRY = {"input_tokens": 0, "output_tokens": 0,
                     "cache_read_tokens": 0, "cache_write_tokens": 0,

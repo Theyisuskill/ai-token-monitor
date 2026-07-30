@@ -77,11 +77,18 @@ Useful checks:
 
 ```console
 $ ai-token-monitor --summary today | jq .totals
+$ ai-token-monitor --history month | jq '.monthly'   # calendar months
+$ ai-token-monitor --sessions 5 | jq                 # recent conversations
+$ ai-token-monitor --live | jq                       # why is a bar an estimate?
 $ busctl --user call io.github.theyisuskill.AITokenMonitor \
     /io/github/theyisuskill/AITokenMonitor \
     io.github.theyisuskill.AITokenMonitor1 GetSnapshot
 $ journalctl --user -u ai-token-monitor -f
 ```
+
+`--live` runs every enabled real-limit poller once and prints the raw result
+(status, windows, and the reason for a failure) without the daemon running —
+the first thing to ask for in a bug report.
 
 ## Configuration
 
@@ -132,6 +139,14 @@ network feature — an opt-in relaxation of the local-only default — and it is
 stay estimate-only). See `docs/codexbar-port-roadmap.md` for the other
 providers this pattern can cover.
 
+`enabled` also takes `auto`, which switches a poller on only when that
+provider's credential is actually on this machine — the default for the Codex
+poller, so it works out of the box if you use the Codex CLI and costs nothing
+if you don't. When a poller can't report, the bar silently falls back to the
+estimate and the popup says why, *except* for states that aren't faults (a tool
+you simply aren't running stays quiet). `ai-token-monitor --live` prints the
+full picture on demand.
+
 Plans can also be picked from the extension's **Preferences window** (no YAML
 required): choices are persisted to `~/.config/ai-token-monitor/ui.yaml`,
 which overrides `config.yaml` for the UI-managed keys (`plans`,
@@ -145,6 +160,15 @@ Around the bars the popup also shows:
   re-arms once usage drops back below it.
 - **By model** — a collapsible top-3 cost breakdown per tool for the week.
 - A 7-day spend sparkline above the footer.
+
+### History
+
+The last tab in the popup looks backwards over everything the database holds,
+not just the current windows: 30 days of daily spend, calendar months with a
+month-over-month change, where the money went by model, and your most recent
+sessions (when, how long, how many requests, how much). It is fetched on demand
+over `GetHistory` rather than carried in every snapshot, so it costs nothing
+until you open it. Same data from the CLI with `--history` / `--sessions`.
 
 ### Waybar (Sway/Hyprland — no GNOME needed)
 

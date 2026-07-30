@@ -60,6 +60,15 @@ denominators), `tools` (tools with usage), `ui`, `updated`, and `live`
 (per-tool poller status). On a tool's `five_hours`/`week` entry a poller may add
 `real{used_percent,resets_at,source}` and (week) `real_scoped[]`. The extension
 **prefers `real` over the dollar estimate** and marks it with a teal "live" dot.
+A `live` entry may carry `quiet: true` (`live.QUIET_STATUSES`) meaning "nothing
+to report, not a failure" — the UI hides its amber warning for those.
+
+**History is NOT in the snapshot.** `GetHistory(period)` (`week|month|quarter|
+all`) returns `{daily, monthly, sessions, models, tools, totals}` from
+`Store.history()`; the snapshot is re-emitted on every debounced update, so
+months of series don't belong in it. The extension fetches it lazily for the
+History tab and caches it (`HISTORY_TTL_MS`). Same data from the CLI:
+`--history <period>`, `--sessions [N]`.
 
 ## Windows / budgets
 
@@ -71,7 +80,8 @@ Antigravity meters two independent pools (Gemini vs Claude&GPT) → `QUOTA_GROUP
 
 ## Extension UI
 
-- Popup: **provider switcher** — a tab row (one tab per tool), each opening a
+- Popup: **provider switcher** — a tab row (Summary, one tab per tool, and an
+  icon-only **History** tab), each opening a
   detailed card (Session, Weekly, per-model breakdown, cost). `ui.layout` =
   `switcher` (default) | `stacked`. `_addTabBar`/`_addProviderDetail` in
   `extension.js`. Prefs has a Popup-layout combo.
@@ -101,7 +111,10 @@ so editing the repo changes nothing until you sync:
   method above). Makefile targets are still the source of truth for what to copy.
 
 Verify the daemon live: `ai-token-monitor --summary all | jq`, or call
-`GetSnapshot` over D-Bus and check `live` + per-entry `real`. Logs:
+`GetSnapshot` over D-Bus and check `live` + per-entry `real`. `--live` polls
+every enabled poller once and prints the raw result (why a bar is an estimate)
+— note each call is a real request, so don't loop it against a rate-limited
+provider. Logs:
 `journalctl --user -u ai-token-monitor -f`.
 
 ## Conventions

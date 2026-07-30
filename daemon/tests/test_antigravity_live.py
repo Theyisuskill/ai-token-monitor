@@ -156,12 +156,19 @@ def test_not_running_when_no_server_and_no_creds(tmp_path):
 
 
 def test_expired_token_reports_stale_without_refresh(tmp_path):
-    _write_gemini(tmp_path, creds={
-        "access_token": "ya29.stale",
-        "refresh_token": "1//r",
-        "expiry_date": int((time.time() - 60) * 1000)})
+    creds = {"access_token": "ya29.stale", "refresh_token": "1//r",
+             "expiry_date": int((time.time() - 60) * 1000)}
+    _write_gemini(tmp_path, creds=creds)
+    before = (tmp_path / ".gemini" / "oauth_creds.json").read_text()
+
     out = _poller(tmp_path).poll()
-    assert out["status"] == "token_expired"
+
+    # No server answered, so Antigravity isn't running: a stale stored login is
+    # then the expected state, reported quietly with the reason kept for --live.
+    assert out["status"] == "not_running"
+    assert out["detail"] == "token_expired"
+    # READ-ONLY: the CLI owns this file; the poller must never rewrite it.
+    assert (tmp_path / ".gemini" / "oauth_creds.json").read_text() == before
 
 
 def test_api_key_auth_type_is_skipped(tmp_path):
