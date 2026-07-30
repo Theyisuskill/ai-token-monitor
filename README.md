@@ -183,15 +183,22 @@ the daemon owns file watching, offsets and dedup. See
 
 ## Packaging & publishing
 
+See `packaging/COPR.md` for the step-by-step release flow.
+
 - **RPM (recommended for Fedora):** `packaging/ai-token-monitor.spec` builds
   two subpackages — `ai-token-monitor` (daemon, `%pyproject` macros, systemd
   user unit, D-Bus activation) and `gnome-shell-extension-ai-token-monitor`.
-  Publish through [Copr](https://copr.fedorainfracloud.org/) first; submit
-  for Fedora review once the API stabilizes.
+  Publish through [Copr](https://copr.fedorainfracloud.org/) first (`make
+  srpm && make copr`); submit for Fedora review once the API stabilizes.
+  Always check `rpm -qlp` on the extension subpackage before publishing: it
+  must carry `prefs.js`, `icons/` and the compiled `locale/*.mo` as well as
+  `extension.js`, or the extension installs without Preferences, icons or
+  translations.
 - **extensions.gnome.org:** `make pack` produces the reviewable zip. E.G.O
   requires a GPL-compatible license (this project is GPL-3.0-or-later) and
   no bundled binaries — the extension is a pure D-Bus client, which is
-  exactly what reviewers want to see.
+  exactly what reviewers want to see. Say in the submission notes that it
+  needs the daemon, and how to install it.
 - **Why not Flatpak:** the daemon must read arbitrary dot-directories in
   `$HOME` (`~/.claude`, `~/.gemini`, ...) and own a session bus name, which
   defeats the sandbox (`filesystem=home` + `--own-name`), and GNOME

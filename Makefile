@@ -8,7 +8,7 @@ DBUS_DIR    := $(HOME)/.local/share/dbus-1/services
 BIN         := $(HOME)/.local/bin/ai-token-monitor
 
 .PHONY: help install-user install-daemon install-extension install-services \
-        uninstall-user enable restart pack srpm check
+        uninstall-user enable restart pack srpm copr check
 
 help:
 	@echo "Targets:"
@@ -18,6 +18,7 @@ help:
 	@echo "  restart           restart the daemon"
 	@echo "  pack              build the extension zip for extensions.gnome.org"
 	@echo "  srpm              build a source RPM from packaging/*.spec"
+	@echo "  copr              submit the source RPM to Copr (see packaging/COPR.md)"
 	@echo "  check             quick syntax/backfill smoke test"
 
 install-user: install-daemon install-services install-extension
@@ -68,6 +69,10 @@ pack:
 srpm:
 	rpmbuild -bs packaging/ai-token-monitor.spec \
 	    --define "_sourcedir $(PWD)" --define "_srcrpmdir $(PWD)/packaging"
+
+# Source0 is the GitHub tarball for the tag in Version:, so tag and push first.
+copr: srpm
+	copr-cli build ai-token-monitor $(lastword $(sort $(wildcard packaging/*.src.rpm)))
 
 check:
 	python3 -m compileall -q daemon/src

@@ -13,6 +13,8 @@ BuildArch:      noarch
 BuildRequires:  python3-devel
 BuildRequires:  pyproject-rpm-macros
 BuildRequires:  systemd-rpm-macros
+# msgfmt, to compile the extension's gettext catalogs at build time.
+BuildRequires:  gettext
 
 Requires:       python3-gobject
 Requires:       python3-dasbus
@@ -56,11 +58,22 @@ install -Dpm0644 data/%{dbus_name}.service \
 install -Dpm0644 data/config.example.yaml \
     %{buildroot}%{_docdir}/%{name}/config.example.yaml
 
-# GNOME Shell extension
-install -d %{buildroot}%{_datadir}/gnome-shell/extensions/%{ext_uuid}
-install -pm0644 extension/extension.js extension/metadata.json \
-    extension/stylesheet.css \
+# GNOME Shell extension. Must stay in sync with the Makefile's
+# install-extension target: prefs.js (the Preferences window), icons/ (brand
+# glyphs used by the tabs and the icon panel mode) and the compiled gettext
+# catalogs are all load-bearing — an extension shipped without them silently
+# loses Preferences, its icons and every translation.
+install -d %{buildroot}%{_datadir}/gnome-shell/extensions/%{ext_uuid}/icons
+install -pm0644 extension/extension.js extension/prefs.js \
+    extension/metadata.json extension/stylesheet.css \
     %{buildroot}%{_datadir}/gnome-shell/extensions/%{ext_uuid}/
+install -pm0644 extension/icons/*.svg extension/icons/NOTICE \
+    %{buildroot}%{_datadir}/gnome-shell/extensions/%{ext_uuid}/icons/
+for po in extension/po/*.po; do
+    lang=$(basename "$po" .po)
+    install -d %{buildroot}%{_datadir}/gnome-shell/extensions/%{ext_uuid}/locale/$lang/LC_MESSAGES
+    msgfmt "$po" -o %{buildroot}%{_datadir}/gnome-shell/extensions/%{ext_uuid}/locale/$lang/LC_MESSAGES/%{ext_uuid}.mo
+done
 
 %post
 %systemd_user_post ai-token-monitor.service
