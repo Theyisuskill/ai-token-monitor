@@ -12,6 +12,7 @@ import urllib.request
 import pytest
 
 from ai_token_monitor import live as live_mod
+from ai_token_monitor.live import http as live_http
 from ai_token_monitor.live.antigravity import (
     CREDENTIAL_STALE_STATUSES,
     AntigravityLimitsPoller,
@@ -149,7 +150,7 @@ def test_normalize_token_response_rejects_junk(payload):
 def test_refresh_needs_a_configured_client(monkeypatch):
     # No client id/secret -> no request at all, and no token.
     poller = AntigravityLimitsPoller({})
-    monkeypatch.setattr(urllib.request, "urlopen", _boom)
+    monkeypatch.setattr(live_http, "urlopen", _boom)
     assert poller._refresh_token("1//refresh", timeout=1) is None
 
 
@@ -162,7 +163,7 @@ def test_refresh_caches_until_it_expires(monkeypatch):
         calls.append(req)
         return _Resp(json.dumps({"access_token": "ya29.fresh", "expires_in": 3600}))
 
-    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(live_http, "urlopen", fake_urlopen)
     assert poller._refresh_token("1//refresh", timeout=1) == "ya29.fresh"
     assert poller._refresh_token("1//refresh", timeout=1) == "ya29.fresh"
     assert len(calls) == 1  # second call served from the in-memory cache
@@ -173,5 +174,46 @@ def test_refresh_caches_until_it_expires(monkeypatch):
 def test_refresh_survives_a_network_error(monkeypatch):
     poller = AntigravityLimitsPoller(
         {"oauth_client_id": "cid", "oauth_client_secret": "secret"})
-    monkeypatch.setattr(urllib.request, "urlopen", _boom)
+    monkeypatch.setattr(live_http, "urlopen", _boom)
     assert poller._refresh_token("1//refresh", timeout=1) is None
+
+
+# --- credential_tiers: knowing the plan without polling ---------------------
+
+def test_credential_tiers_reads_every_poller_enabled_or_not(tmp_path):
+    """The plan decides which windows a tool even has, so the tier is read
+    from the credential whether or not the poller is switched on — it is a
+    local file read, not a request."""
+    import base64
+
+    claims = base64.urlsafe_b64encode(
+        json.dumps({"https://api.openai.com/auth":
+                    {"chatgpt_plan_type": "prolite"}}).encode()
+    ).decode().rstrip("=")
+    cred = tmp_path / "auth.json"
+    cred.write_text(json.dumps({"tokens": {"id_token": f"h.{claims}.s"}}))
+
+    tiers = live_mod.credential_tiers(
+        {"codex": {"enabled": False, "credentials": str(cred)}})
+    assert tiers["codex"] == "prolite"
+
+
+def test_credential_tiers_is_quiet_when_nothing_is_readable(monkeypatch, tmp_path):
+    # $CODEX_HOME keeps the default-path branch off this machine's real
+    # credential, so the test says the same thing everywhere.
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    assert live_mod.credential_tiers(
+        {"codex": {"credentials": str(tmp_path / "absent.json")}}) == {}
+    assert live_mod.credential_tiers(None) == {}
+    assert live_mod.credential_tiers({"codex": "yes"}) == {}  # non-dict conf
+
+
+def test_credential_tiers_survives_a_broken_poller(monkeypatch, tmp_path):
+    """One provider's mangled credential must not blank every other tool's
+    plan (or take the snapshot down with it)."""
+    def boom(_settings):
+        raise RuntimeError("unreadable")
+
+    monkeypatch.setattr(CodexLimitsPoller, "offline_tier",
+                        classmethod(lambda cls, s: boom(s)))
+    assert live_mod.credential_tiers({"codex": {}}) == {}

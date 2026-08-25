@@ -66,6 +66,7 @@ from typing import Any
 from ..models import iso_to_epoch
 from . import register
 from .base import LivePoller
+from . import http as _http
 
 log = logging.getLogger(__name__)
 
@@ -571,7 +572,7 @@ class AntigravityLimitsPoller(LivePoller):
             "User-Agent": "ai-token-monitor",
         })
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            with _http.urlopen(req, timeout) as resp:
                 return json.loads(resp.read().decode("utf-8")), None
         except urllib.error.HTTPError as exc:
             if exc.code == 401:
@@ -648,7 +649,7 @@ class AntigravityLimitsPoller(LivePoller):
                                          "User-Agent": "ai-token-monitor",
                                      })
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            with _http.urlopen(req, timeout) as resp:
                 payload = json.loads(resp.read().decode("utf-8"))
         except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
             log.debug("antigravity: token refresh failed: %s", exc)

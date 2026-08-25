@@ -45,6 +45,7 @@ from typing import Any
 
 from ..models import iso_to_epoch
 from . import register
+from . import http as _http
 from .base import LivePoller
 
 log = logging.getLogger(__name__)
@@ -173,7 +174,7 @@ class ClaudeLimitsPoller(LivePoller):
         })
         timeout = float(self.settings.get("timeout_s", 15) or 15)
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            with _http.urlopen(req, timeout) as resp:
                 payload = json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             if exc.code == 401:

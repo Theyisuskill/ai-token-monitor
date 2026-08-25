@@ -89,11 +89,28 @@ PLAN_PRESETS: dict[str, dict[str, Any]] = {
     "codex": {  # OpenAI Codex CLI (ChatGPT subscription tiers)
         "prefix": "codex",
         "default_plan": "plus",
+        # A window set to None means the plan does not meter it at all (see
+        # plan_windows): Codex on the Go tier has a WEEKLY allowance only —
+        # there is no 5-hour session window to show a bar for.
         "plans": {
+            "go":   {"5h": None, "weekly": 8.0},
             "plus": {"5h": 10.0, "weekly": 40.0},
             "pro":  {"5h": 60.0, "weekly": 300.0},
         },
     },
+}
+
+#: The rate-limit windows a plan preset can describe.
+WINDOWS = ("5h", "weekly")
+
+#: Credential tier strings whose plan key substring-matching can't find, or
+#: would find WRONG: ChatGPT Go reports itself as "prolite", which contains
+#: "pro" — the priciest tier — so the alias has to win before the generic
+#: match runs, or a Go user gets Pro-sized bars and a 5h window they don't have.
+TIER_ALIASES: dict[str, str] = {
+    "prolite": "go",
+    "pro_lite": "go",
+    "plus_lite": "go",
 }
 
 # In 'auto' budget mode, each denominator tracks the user's own observed peak
@@ -153,6 +170,35 @@ DEFAULTS: dict[str, Any] = {
 }
 
 
+def _finite_number(value: Any) -> float | None:
+    """``value`` as a float if it is a real, finite number (bools are not)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    if number != number or number in (float("inf"), float("-inf")):
+        return None
+    return number
+
+
+def validate_budgets(budgets: Any) -> str | None:
+    """Error message for an invalid "budgets" value, or None if valid.
+
+    Pure, so the D-Bus layer can reject junk before it is persisted rather
+    than after it has broken a snapshot.
+    """
+    if not isinstance(budgets, dict):
+        return "budgets must be an object"
+    for key, value in budgets.items():
+        if not isinstance(key, str):
+            return f"budget names must be strings (got {key!r})"
+        number = _finite_number(value)
+        if number is None:
+            return f"budget {key!r} must be a finite number (got {value!r})"
+        if number < 0:
+            return f"budget {key!r} cannot be negative"
+    return None
+
+
 def validate_ui(ui: Any) -> str | None:
     """Error message for an invalid "ui" settings value, or None if valid.
 
@@ -181,14 +227,34 @@ def plan_from_tier(tier: Any, plan_keys: Iterable[str]) -> str | None:
     Claude's credential carries ``rateLimitTier: default_claude_max_5x``,
     Codex a ``plan_type`` like ``plus`` — a substring match against the
     tool's own preset keys covers both without a per-provider table.
+    ``TIER_ALIASES`` handles the tiers that substring-matching gets wrong.
     """
     if not tier or not isinstance(tier, str):
         return None
     lowered = tier.lower()
-    for key in sorted(plan_keys, key=len, reverse=True):
+    keys = set(plan_keys)
+    for alias, plan in TIER_ALIASES.items():
+        if alias in lowered and plan in keys:
+            return plan
+    for key in sorted(keys, key=len, reverse=True):
         if key in lowered:
             return key
     return None
+
+
+def plan_windows(tool: str, plan: str | None) -> dict[str, bool]:
+    """Which rate-limit windows ``tool``'s ``plan`` actually meters.
+
+    Not every subscription has both. Codex on the Go tier is metered on a
+    weekly allowance with no 5-hour session window, so its preset carries
+    ``"5h": None`` — "this plan has no such window". The UI drops that bar
+    instead of scaling usage against a limit that does not exist.
+    """
+    spec = PLAN_PRESETS.get(tool)
+    if not spec:  # unknown tool (third-party adapter): assume the usual pair
+        return dict.fromkeys(WINDOWS, True)
+    base = spec["plans"].get(plan) or spec["plans"][spec["default_plan"]]
+    return {window: base.get(window) is not None for window in WINDOWS}
 
 
 def resolve_budgets(
@@ -218,15 +284,48 @@ def resolve_budgets(
         prefix = spec["prefix"]
         plan = plans.get(tool) or detected.get(tool) or spec["default_plan"]
         base = spec["plans"].get(plan) or spec["plans"][spec["default_plan"]]
-        for window in ("5h", "weekly"):
+        for window in WINDOWS:
             key = f"{prefix}_{window}"
             if key in overrides:  # explicit value wins outright
                 continue
-            value = float(base[window])
+            limit = base.get(window)
+            if limit is None:
+                # The plan has no such window (Codex Go: weekly only). Emit no
+                # denominator — a bar with no limit behind it is a lie, and the
+                # UI keys off the missing budget to drop it.
+                continue
+            value = float(limit)
             if mode == "auto":
                 peak = (peaks.get(tool) or {}).get(window, 0.0)
                 value = max(value, peak * AUTO_HEADROOM)
             resolved[key] = round(value, 2)
+    return resolved
+
+
+def resolve_windows(
+    plans: dict[str, str] | None,
+    detected: dict[str, str] | None = None,
+    overrides: dict[str, float] | None = None,
+) -> dict[str, dict[str, bool]]:
+    """Per-tool ``{"5h": bool, "weekly": bool}`` — the windows to render.
+
+    Same plan precedence as :func:`resolve_budgets` (explicit ``plans:``, then
+    the plan a live poller detected from the credential, then the default).
+    An explicit ``budgets.<prefix>_<window>`` override re-enables a window the
+    preset says the plan lacks: the user naming a ceiling asserts it exists.
+    """
+    plans = plans or {}
+    detected = detected or {}
+    overrides = overrides or {}
+    resolved: dict[str, dict[str, bool]] = {}
+    for tool, spec in PLAN_PRESETS.items():
+        plan = plans.get(tool) or detected.get(tool) or spec["default_plan"]
+        support = plan_windows(tool, plan)
+        for window in WINDOWS:
+            override = _finite_number(overrides.get(f"{spec['prefix']}_{window}"))
+            if override is not None and override > 0:
+                support[window] = True
+        resolved[tool] = support
     return resolved
 
 
@@ -258,7 +357,25 @@ class Config:
 
     @property
     def budgets(self) -> dict[str, float]:
-        return self._data.get("budgets") or {}
+        """Budget overrides, junk dropped.
+
+        These reach the daemon from two places that can put anything in them —
+        a hand-edited config.yaml and any peer on the session bus calling
+        SetSettings — and they are consumed as numbers (``value > 0``,
+        ``float(value)``). Filtering here keeps one bad entry from raising out
+        of a snapshot or a waybar run instead of just being ignored.
+        """
+        raw = self._data.get("budgets") or {}
+        if not isinstance(raw, dict):
+            return {}
+        clean: dict[str, float] = {}
+        for key, value in raw.items():
+            number = _finite_number(value)
+            if number is None or number < 0:
+                log.warning("Ignoring non-numeric budget %r: %r", key, value)
+                continue
+            clean[str(key)] = number
+        return clean
 
     @property
     def plans(self) -> dict[str, str]:

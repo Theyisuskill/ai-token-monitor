@@ -56,8 +56,9 @@ GNOME Shell top bar  ──D-Bus(session)──►  daemon (GLib main loop)
 
 `five_hours`/`week`/`today`/`month`/`hour`/`day` (each `{tools:[{tool,cost_usd,
 total_tokens,...}], totals}`), `daily` (7-day series), `budgets` (plan-scaled
-denominators), `tools` (tools with usage), `ui`, `updated`, and `live`
-(per-tool poller status). On a tool's `five_hours`/`week` entry a poller may add
+denominators), `windows` (per-tool `{"5h":bool,"weekly":bool}` — which limit
+windows that plan actually meters), `tools` (tools with usage), `ui`,
+`updated`, and `live` (per-tool poller status). On a tool's `five_hours`/`week` entry a poller may add
 `real{used_percent,resets_at,source}` and (week) `real_scoped[]`. The extension
 **prefers `real` over the dollar estimate** and marks it with a teal "live" dot.
 A `live` entry may carry `quiet: true` (`live.QUIET_STATUSES`) meaning "nothing
@@ -77,6 +78,16 @@ reset on a rolling basis, NOT calendar). Providers publish no dollar figure for
 those limits, so bars are scaled by an API-equivalent budget that adapts to the
 user's plan (`plans:` + `PLAN_PRESETS`, or `budget_mode: auto` self-calibrates).
 Antigravity meters two independent pools (Gemini vs Claude&GPT) → `QUOTA_GROUPS`.
+
+**Not every plan has both windows.** A `PLAN_PRESETS` window set to `None`
+means the plan doesn't meter it — Codex on ChatGPT Go (credential tier
+`prolite`) has a weekly allowance and no 5h session limit. `resolve_windows()`
+resolves that per tool, `Daemon._window_support()` lets a live poller override
+it with the windows the provider actually reports, and the extension drops the
+bar (`_metersWindow`) instead of scaling against a limit that doesn't exist.
+Plans are detected from the credential too: `LivePoller.offline_tier()` (Codex
+decodes `chatgpt_plan_type` out of its OAuth JWT, no network) → `plans:` still
+wins when set.
 
 ## Extension UI
 

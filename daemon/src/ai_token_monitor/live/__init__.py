@@ -43,6 +43,32 @@ def is_enabled(cls: type[LivePoller], conf: dict[str, Any]) -> bool:
     return bool(value)
 
 
+def credential_tiers(settings: dict[str, dict[str, Any]] | None
+                     ) -> dict[str, str]:
+    """Plan tier each poller can read off its credential file, by tool.
+
+    A local read, not a poll, so every registered poller is asked whether or
+    not it is enabled: the plan decides which rate-limit windows an account
+    even has, and getting that wrong shows a bar for a limit that doesn't
+    exist. A poller that can't tell (most of them) simply returns None.
+    """
+    if not isinstance(settings, dict):
+        settings = {}
+    tiers: dict[str, str] = {}
+    for name, cls in sorted(_REGISTRY.items()):
+        conf = settings.get(name)
+        if not isinstance(conf, dict):
+            conf = {}
+        try:
+            tier = cls.offline_tier(conf)
+        except Exception:  # a mangled credential must not break the caller
+            log.exception("live poller %s: offline_tier failed", name)
+            tier = None
+        if tier:
+            tiers[cls.tool] = tier
+    return tiers
+
+
 def create_enabled(settings: dict[str, dict[str, Any]] | None) -> list[LivePoller]:
     """Instantiate every registered poller enabled in ``live_limits``.
 

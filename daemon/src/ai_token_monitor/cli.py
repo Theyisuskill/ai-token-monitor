@@ -8,7 +8,7 @@ import logging
 import sys
 import time
 
-from . import __version__, config as config_mod
+from . import __version__, config as config_mod, live
 
 #: The providers' rate-limit windows, both anchored to first use.
 SESSION_SPAN = 5.0 * 3600.0
@@ -33,8 +33,16 @@ def waybar_status(store, cfg) -> dict:
                    "weekly": store.peak_window(tool, 7.0 * 24.0 * 3600.0)}
             for tool in config_mod.PLAN_PRESETS
         }
+    # The credential names the plan (Codex), so a one-shot run scales bars to
+    # the real subscription — and knows which windows it even has — without a
+    # running poller.
+    detected = {tool: plan
+                for tool, tier in live.credential_tiers(cfg.live_limits).items()
+                if (plan := config_mod.plan_from_tier(
+                    tier, config_mod.PLAN_PRESETS.get(tool, {}).get("plans", ())))}
     budgets = config_mod.resolve_budgets(cfg.plans, cfg.budget_mode,
-                                         cfg.budgets, peaks)
+                                         cfg.budgets, peaks, detected)
+    windows = config_mod.resolve_windows(cfg.plans, detected, cfg.budgets)
     prefixes = {tool: spec["prefix"]
                 for tool, spec in config_mod.PLAN_PRESETS.items()}
 
@@ -54,11 +62,16 @@ def waybar_status(store, cfg) -> dict:
     for tool in store.tools_seen():
         prefix = prefixes.get(tool, tool)
         parts = []
-        for label, span, lookback, budget in (
-                ("5h", SESSION_SPAN, 14,
+        # A plan with no 5h window (Codex Go: weekly allowance only) gets no
+        # 5h part — there is nothing for it to be a fraction of.
+        supported = windows.get(tool, {})
+        for key, label, span, lookback, budget in (
+                ("5h", "5h", SESSION_SPAN, 14,
                  budgets.get(f"{prefix}_5h", 0.0)),
-                ("wk", WEEK_SPAN, None,
+                ("weekly", "wk", WEEK_SPAN, None,
                  budgets.get(f"{prefix}_weekly", 0.0))):
+            if supported.get(key) is False:
+                continue
             anchor = store.session_anchor(tool, span, lookback)
             cost = (store.summary(anchor, tool=tool)["totals"]["cost_usd"]
                     if anchor else 0.0)

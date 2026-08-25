@@ -68,6 +68,12 @@ msgstr "Tienes una ventana de 5 horas limpia"
 msgid "Session (5h)"
 msgstr "Sesión (5h)"
 
+msgid "Last 5 hours"
+msgstr "Últimas 5 horas"
+
+msgid "no session limit"
+msgstr "sin límite de sesión"
+
 msgid "Weekly"
 msgstr "Semanal"
 

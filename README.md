@@ -112,9 +112,17 @@ being hardcoded. Declare your tier and the daemon resolves the ceilings:
 plans:
   claude_code: max_20x   # pro | max_5x | max_20x  (Max = 5x / 20x the Pro cap)
   gemini_cli: pro        # Antigravity: free | pro | ultra
-  codex: plus            # OpenAI Codex CLI: plus | pro
+  codex: plus            # OpenAI Codex CLI: go | plus | pro
 budget_mode: preset      # preset (use the tiers) | auto (self-calibrate)
 ```
+
+**Not every plan has both windows.** Codex on ChatGPT Go is metered on a
+weekly allowance with no 5-hour session limit, so that tab shows the weekly
+bar alone (with the last 5 hours' spend as plain context) instead of a session
+bar standing for a limit the account doesn't have. The daemon works this out
+from the plan — read from the Codex credential itself when you haven't
+declared one — and a live poller corrects it with whatever the provider
+actually reports.
 
 The popup only shows tools you actually use: sections appear per tool with
 recorded usage (one subscription → one section, three → three), so nothing is

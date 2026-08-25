@@ -48,11 +48,12 @@ Keychain-only and infeasible here.
 | G | Provider status / "real vs estimate" badges | LOCAL/NET | S | Med-High | **Done** |
 | D | Gemini/Antigravity quota via Google OAuth | NET+creds | M/L | Med | Fallback |
 | F | OpenCode real 5h/weekly % (web cookie) | NET+cookie | M | Med | Optional |
-| E | Codex/ChatGPT real limits (OAuth) | NET+creds | M | Low* | **Built (off)** |
+| E | Codex/ChatGPT real limits (OAuth) | NET+creds | M | Low* | **Done (auto)** |
 | H | Qwen | NET+creds | M/L | Low | Deferred |
 | I | Anthropic/OpenAI Admin-API ledgers | NET+creds | M | Low | Deferred |
 
-\* Low only because there's no `~/.codex` on this machine; the technique is 100% Linux-portable.
+\* Was "low" only because there was no `~/.codex` on this machine; the Codex
+CLI is installed now and the poller runs by default (`enabled: auto`).
 
 ### Track A — OpenCode local `.db` adapter — **DONE**
 `daemon/src/ai_token_monitor/adapters/opencode.py`. Reads
@@ -160,8 +161,14 @@ default `enabled: false` in `live_limits`:
   sub-entries, and the extension's grouped branch prefers `g.real` on the two
   pool bars.
 - **Codex** (`name=codex`, `tool=codex`): `~/.codex/auth.json` →
-  `chatgpt.com/backend-api/wham/usage`. Portable, unit-tested, off by default
-  (no `~/.codex` here).
+  `chatgpt.com/backend-api/wham/usage`. Portable, unit-tested, `enabled: auto`
+  (on as soon as that credential exists). Two things CodexBar's normalizer
+  glosses over, both fixed here: each API window is classified by its own
+  `limit_window_seconds` rather than by position — a plan with **only** a
+  weekly limit sends it as `primary_window`, and reading that positionally
+  invents a 5-hour limit the account never had — and the tier is also decoded
+  straight from the credential's JWT (`chatgpt_plan_type`), so the plan, and
+  therefore the set of windows, is right before the first successful poll.
 
 ## Visual
 
@@ -216,3 +223,15 @@ tabs, card headers and link rows; the top-bar indicator swaps its generic
 gauge for the most-pressured provider's glyph (monochrome). Summary shows a
 per-provider "Limits" mini-bar list; bars fill in with a 350ms scale sweep
 (honors `enable-animations`); over-pace weekly rows tint amber.
+
+**Plans without a 5h window**: not every subscription meters both rolling
+windows. Codex on ChatGPT Go (credential tier `prolite`, which substring
+matching would happily read as `pro` — hence `TIER_ALIASES`) has a weekly
+allowance and no session limit. A `PLAN_PRESETS` window of `None` says so;
+`resolve_windows()` + `Daemon._window_support()` publish a per-tool
+`windows{"5h","weekly"}` map in the snapshot, corrected by the windows a
+healthy poller actually reports (accumulated as a union, so one odd response
+can't blank a bar). The extension's `_metersWindow()` then drops the session
+bar, the session-reset notification and the 5h alert for that tool, and shows
+the last 5 hours as plain context under the weekly bar. The waybar payload
+drops its `5h` part the same way.

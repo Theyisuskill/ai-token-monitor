@@ -95,6 +95,8 @@ class MonitorInterface:
             return json.dumps({"error": str(exc)})
 
         plans = changes.get("plans") or {}
+        if not isinstance(plans, dict):
+            return json.dumps({"error": "plans must be an object"})
         for tool, plan in plans.items():
             spec = config_mod.PLAN_PRESETS.get(tool)
             if spec is None:
@@ -108,6 +110,12 @@ class MonitorInterface:
                                "valid": ["preset", "auto"]})
         if "ui" in changes:
             problem = config_mod.validate_ui(changes["ui"])
+            if problem:
+                return json.dumps({"error": problem})
+        # Anything on the session bus can call this, and budgets are consumed
+        # as numbers — reject junk here instead of persisting it into ui.yaml.
+        if "budgets" in changes:
+            problem = config_mod.validate_budgets(changes["budgets"])
             if problem:
                 return json.dumps({"error": problem})
 

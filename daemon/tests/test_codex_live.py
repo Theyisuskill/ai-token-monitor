@@ -4,12 +4,14 @@ No network: normalize_usage() is pure, and the missing-credential path returns
 before any HTTP request is attempted.
 """
 
+import base64
 import json
 import time
 
 from ai_token_monitor.live.codex import (
     CodexLimitsPoller,
     normalize_usage,
+    plan_tier_from_tokens,
     read_tokens,
 )
 
@@ -132,3 +134,86 @@ def test_read_tokens_realistic_auth_json(tmp_path):
     tokens = read_tokens(path)
     assert tokens["access_token"] == "a"
     assert tokens["account_id"] == "acct-123"
+
+
+def _jwt(claims):
+    """An unsigned JWT carrying `claims` — the poller reads the payload only."""
+    body = base64.urlsafe_b64encode(
+        json.dumps(claims).encode()).decode().rstrip("=")
+    return f"header.{body}.signature"
+
+
+def test_lone_weekly_window_is_not_read_as_a_session_window():
+    """ChatGPT Go ("prolite") meters Codex weekly only, and sends that single
+    window as primary_window. Classifying by position would invent a 5-hour
+    limit the account is not metered on."""
+    payload = {
+        "plan_type": "prolite",
+        "rate_limit": {
+            "primary_window": {
+                "used_percent": 31,
+                "reset_at": int(NOW + 400_000),
+                "limit_window_seconds": 604_800,
+            },
+        },
+    }
+    out = normalize_usage(payload, now=NOW)
+    assert "five_hour" not in out["windows"]
+    assert out["windows"]["weekly"]["used_percent"] == 31.0
+    assert out["windows"]["weekly"]["resets_at"] == NOW + 400_000
+    assert out["plan_tier"] == "prolite"
+
+
+def test_windows_are_classified_by_their_own_span_not_position():
+    payload = {
+        "rate_limit": {
+            "primary_window": {"used_percent": 9, "limit_window_seconds": 604_800},
+            "secondary_window": {"used_percent": 80, "limit_window_seconds": 18_000},
+        },
+    }
+    out = normalize_usage(payload, now=NOW)
+    assert out["windows"]["weekly"]["used_percent"] == 9.0
+    assert out["windows"]["five_hour"]["used_percent"] == 80.0
+
+
+def test_unlabelled_windows_fall_back_to_position():
+    payload = {
+        "rate_limit": {
+            "primary_window": {"used_percent": 9},
+            "secondary_window": {"used_percent": 80},
+        },
+    }
+    out = normalize_usage(payload, now=NOW)
+    assert out["windows"]["five_hour"]["used_percent"] == 9.0
+    assert out["windows"]["weekly"]["used_percent"] == 80.0
+
+
+def test_plan_tier_read_from_the_credential_jwt():
+    tokens = {"id_token": _jwt(
+        {"https://api.openai.com/auth": {"chatgpt_plan_type": "prolite"}})}
+    assert plan_tier_from_tokens(tokens) == "prolite"
+
+
+def test_plan_tier_falls_back_to_the_access_token():
+    tokens = {
+        "id_token": _jwt({"no": "auth claim"}),
+        "access_token": _jwt(
+            {"https://api.openai.com/auth": {"chatgpt_plan_type": "plus"}}),
+    }
+    assert plan_tier_from_tokens(tokens) == "plus"
+
+
+def test_plan_tier_survives_garbage_tokens():
+    for tokens in ({}, None, {"id_token": "not-a-jwt"},
+                   {"id_token": "a.!!!not-base64!!!.c"},
+                   {"id_token": 42}, {"id_token": _jwt(["not", "a", "dict"])}):
+        assert plan_tier_from_tokens(tokens) is None
+
+
+def test_offline_tier_reads_the_credential_without_polling(tmp_path):
+    cred = tmp_path / "auth.json"
+    cred.write_text(json.dumps({"tokens": {"id_token": _jwt(
+        {"https://api.openai.com/auth": {"chatgpt_plan_type": "prolite"}})}}))
+    assert CodexLimitsPoller.offline_tier({"credentials": str(cred)}) == "prolite"
+    missing = str(tmp_path / "nope.json")
+    assert CodexLimitsPoller.offline_tier({"credentials": missing}) is None

@@ -38,7 +38,10 @@ adapters:
 plans:
   claude_code: pro       # pro | max_5x | max_20x   (Max = 5x / 20x the Pro cap)
   gemini_cli: free       # Antigravity ("agy"): free | pro | ultra
-  codex: plus            # OpenAI Codex CLI: plus | pro
+  codex: plus            # OpenAI Codex CLI: go | plus | pro
+                         #   go = ChatGPT Go: WEEKLY allowance only, no 5h
+                         #   window — its session bar is dropped, not zeroed.
+                         #   Left unset, the Codex credential names the tier.
 
 # preset = use the tiers above.
 # auto   = ignore the tiers and calibrate each bar to your own busiest observed

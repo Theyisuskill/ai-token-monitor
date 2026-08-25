@@ -666,7 +666,8 @@ class Indicator extends PanelMenu.Button {
         const now = Date.now() / 1000;
         const current = new Map();
         for (const t of this._snapshot?.five_hours?.tools ?? []) {
-            if (t.session_active && t.resets_at)
+            // A weekly-only plan has no session to announce the reset of.
+            if (t.session_active && t.resets_at && this._metersWindow(t.tool, '5h'))
                 current.set(t.tool, t.resets_at);
         }
         if (this._snapshot?.ui?.alerts !== false) {
@@ -711,10 +712,12 @@ class Indicator extends PanelMenu.Button {
             return;
         for (const id of this._activeTools()) {
             const style = toolStyle(id);
-            for (const [period, label, budgetKey] of [
-                ['five_hours', _('Session (5h)'), `${style.prefix}_5h`],
-                ['week', _('Weekly'), `${style.prefix}_weekly`],
+            for (const [period, window, label, budgetKey] of [
+                ['five_hours', '5h', _('Session (5h)'), `${style.prefix}_5h`],
+                ['week', 'weekly', _('Weekly'), `${style.prefix}_weekly`],
             ]) {
+                if (!this._metersWindow(id, window))
+                    continue;
                 // Alert on the provider's real % when available (more accurate
                 // than the estimate); otherwise fall back to cost/budget.
                 let pct = this._realPct(period, id);
@@ -766,6 +769,18 @@ class Indicator extends PanelMenu.Button {
         const pData = this._snapshot?.[period];
         const tData = pData?.tools?.find(t => t.tool === toolName);
         return tData ?? {cost_usd: 0, total_tokens: 0};
+    }
+
+    /** Whether a tool's plan actually meters a window ('5h' | 'weekly').
+     *
+     * Not every subscription has both: Codex on the ChatGPT Go tier is
+     * metered on a weekly allowance with no 5-hour session window. The daemon
+     * says which windows exist (from the plan preset, corrected by what the
+     * provider itself reports), and the bars for the rest are dropped instead
+     * of being scaled against a limit the account doesn't have. Unknown means
+     * show it — an older daemon sends no `windows` map. */
+    _metersWindow(toolName, window) {
+        return this._snapshot?.windows?.[toolName]?.[window] !== false;
     }
 
     /** The provider's real used-% for a window if a live poller supplied it,
@@ -1162,10 +1177,12 @@ class Indicator extends PanelMenu.Button {
     _worstWindow(id) {
         const prefix = toolStyle(id).prefix;
         let best = null;
-        for (const [period, suffix, label] of [
-            ['five_hours', '_5h', _('Session (5h)')],
-            ['week', '_weekly', _('Weekly')],
+        for (const [period, window, suffix, label] of [
+            ['five_hours', '5h', '_5h', _('Session (5h)')],
+            ['week', 'weekly', '_weekly', _('Weekly')],
         ]) {
+            if (!this._metersWindow(id, window))
+                continue;
             const entry = this._toolData(period, id);
             let pct = this._realPct(period, id);
             let resets = entry.real?.resets_at;
@@ -1451,6 +1468,8 @@ class Indicator extends PanelMenu.Button {
         const dayRate = this._toolData('day', id).cost_usd / 24;
         const budget5h = this._budget(`${style.prefix}_5h`);
         const budgetWk = this._budget(`${style.prefix}_weekly`);
+        // Weekly-only plans (Codex on ChatGPT Go) get no session bar at all.
+        const meters5h = this._metersWindow(id, '5h');
 
         // Grouped tools (Antigravity: Gemini vs Claude & GPT) get a pair per
         // pool, each preferring the provider's real per-pool % when the live
@@ -1464,14 +1483,16 @@ class Indicator extends PanelMenu.Button {
                 const r5 = g5.real, rw = gw.real;
                 const s = windowText(g5, budget5h, 0);
                 const w = windowText(gw, budgetWk, 0);
-                this.menu.addMenuItem(new ProgressBarRow(
-                    `${_('Session (5h)')} · ${g5.label}`,
-                    g5.cost_usd, budget5h, g5.total_tokens,
-                    r5 ? realDetailText(r5, live) : s.text, style.color, {
-                        warn: r5 ? !!r5.depletes_at : s.warn,
-                        realPct: r5 ? r5.used_percent : null,
-                        realStale: stale,
-                    }));
+                if (meters5h) {
+                    this.menu.addMenuItem(new ProgressBarRow(
+                        `${_('Session (5h)')} · ${g5.label}`,
+                        g5.cost_usd, budget5h, g5.total_tokens,
+                        r5 ? realDetailText(r5, live) : s.text, style.color, {
+                            warn: r5 ? !!r5.depletes_at : s.warn,
+                            realPct: r5 ? r5.used_percent : null,
+                            realStale: stale,
+                        }));
+                }
                 this.menu.addMenuItem(new ProgressBarRow(
                     `${_('Weekly')} · ${g5.label}`,
                     gw.cost_usd, budgetWk, gw.total_tokens,
@@ -1485,13 +1506,15 @@ class Indicator extends PanelMenu.Button {
             const real5 = fiveH.real, realWk = week.real;
             const session = windowText(fiveH, budget5h, hourRate);
             const weekly = windowText(week, budgetWk, dayRate);
-            this.menu.addMenuItem(new ProgressBarRow(
-                _('Session (5h)'), fiveH.cost_usd, budget5h, fiveH.total_tokens,
-                real5 ? realDetailText(real5, live) : session.text, style.color, {
-                    warn: real5 ? !!real5.depletes_at : session.warn,
-                    realPct: real5 ? real5.used_percent : null,
-                    realStale: stale,
-                }));
+            if (meters5h) {
+                this.menu.addMenuItem(new ProgressBarRow(
+                    _('Session (5h)'), fiveH.cost_usd, budget5h, fiveH.total_tokens,
+                    real5 ? realDetailText(real5, live) : session.text, style.color, {
+                        warn: real5 ? !!real5.depletes_at : session.warn,
+                        realPct: real5 ? real5.used_percent : null,
+                        realStale: stale,
+                    }));
+            }
             // Weekly, with a CodexBar-style pace line once the real % is known.
             let wkText = realWk ? realDetailText(realWk, live) : weekly.text;
             let wkWarn = realWk ? !!realWk.depletes_at : weekly.warn;
@@ -1509,6 +1532,15 @@ class Indicator extends PanelMenu.Button {
                     realPct: realWk ? realWk.used_percent : null,
                     realStale: stale,
                 }));
+
+            // On a weekly-only plan the last 5 hours are still worth seeing —
+            // they are the pace that spends the weekly allowance — but as a
+            // plain figure: there is no session ceiling to be a fraction of.
+            if (!meters5h) {
+                this._addKeyValueRow(_('Last 5 hours'),
+                    `${formatCost(fiveH.cost_usd)}  ·  ${formatTokens(fiveH.total_tokens)}`,
+                    _('no session limit'));
+            }
 
             // Monthly window — for plans that also meter a monthly limit, like
             // OpenCode Go (Continuous / Weekly / Monthly). The provider's real

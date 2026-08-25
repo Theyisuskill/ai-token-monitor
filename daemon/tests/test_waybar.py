@@ -66,3 +66,24 @@ def test_multiple_tools_one_line_each(store):
     tooltip = waybar_status(store, cfg())["tooltip"]
     assert len(tooltip.splitlines()) == 2
     assert "agy" in tooltip
+
+
+def test_weekly_only_plan_shows_no_5h_part(store, tmp_path):
+    """Codex on ChatGPT Go has a weekly allowance and no session window: the
+    tooltip must not offer a 5h figure that stands for nothing."""
+    now = time.time()
+    store.add([rec(now - 60, tool="codex", cost=2.0)])
+    # Isolate from this machine's real ~/.codex/auth.json.
+    isolated = {"codex": {"credentials": str(tmp_path / "absent.json")}}
+    out = waybar_status(store, cfg(plans={"codex": "go"}, live_limits=isolated))
+    assert "Codex ·" in out["tooltip"]
+    assert "5h" not in out["tooltip"]
+    assert "wk" in out["tooltip"]
+
+
+def test_plus_plan_keeps_both_windows(store, tmp_path):
+    now = time.time()
+    store.add([rec(now - 60, tool="codex", cost=2.0)])
+    isolated = {"codex": {"credentials": str(tmp_path / "absent.json")}}
+    out = waybar_status(store, cfg(plans={"codex": "plus"}, live_limits=isolated))
+    assert "5h" in out["tooltip"] and "wk" in out["tooltip"]

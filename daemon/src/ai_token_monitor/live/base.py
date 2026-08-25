@@ -85,6 +85,18 @@ class LivePoller(ABC):
         paths = (str(override),) if override else cls.credential_paths
         return any(Path(p).expanduser().exists() for p in paths)
 
+    @classmethod
+    def offline_tier(cls, settings: dict[str, Any]) -> str | None:
+        """The plan tier readable from the credential itself, or None.
+
+        Some credentials name the subscription (Codex's OAuth tokens carry
+        ``chatgpt_plan_type``), which is worth having without a poll: the plan
+        decides which windows a tool even has, so a wrong default can show a
+        limit bar the account is not metered on. Must not do I/O beyond
+        reading that local file, and must not raise.
+        """
+        return None
+
     @property
     def interval(self) -> int:
         """Seconds between polls (clamped to a sane floor)."""

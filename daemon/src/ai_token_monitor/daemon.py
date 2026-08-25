@@ -66,6 +66,10 @@ class Daemon:
         self.pollers = live.create_enabled(config.live_limits)
         self._live: dict[str, dict] = {}
         self._live_ok: dict[str, dict] = {}
+        #: Window keys ("five_hour"/"weekly") each poller has ever reported.
+        self._live_windows: dict[str, set[str]] = {}
+        #: Plan tier read off a credential, no poll needed (see _window_support).
+        self._offline_tiers: dict[str, str] | None = None
         self._live_busy: dict[str, bool] = {}
         self._live_status: dict[str, str] = {}
         # (tool, window-key) -> [(ts, used%), ...] feeding the burn-rate
@@ -217,6 +221,13 @@ class Daemon:
             self._live_ok[tool] = result
             self._note_samples(tool, result)
             self._warn_plan_mismatch(tool, result.get("plan_tier"))
+            # Which windows the provider actually meters, accumulated across
+            # polls: the union, so one response that happens to omit a window
+            # can't make its bar disappear, while a plan that genuinely has no
+            # 5h window (Codex Go) never gets one invented for it.
+            reported = set(result.get("windows") or {})
+            if reported:
+                self._live_windows.setdefault(tool, set()).update(reported)
         if status != self._live_status.get(name):
             self._live_status[name] = status
             if status == "ok" or status in live.QUIET_STATUSES:
@@ -491,6 +502,9 @@ class Daemon:
             # the Summary's week-over-week spend delta.
             "daily": self.store.daily_series(time.time() - 14 * 86400.0),
             "budgets": self._resolved_budgets(),
+            # Per-tool {"5h": bool, "weekly": bool} — not every plan meters
+            # both (Codex Go: weekly allowance, no 5h session window).
+            "windows": self._window_support(),
             "plans": self._effective_plans(),
             "tools": self.store.tools_seen(),
             "ui": self.config.ui,
@@ -508,6 +522,7 @@ class Daemon:
         from . import config as config_mod
 
         self.config = config_mod.load(self.config.path)
+        self._offline_tiers = None  # credential paths may have changed
 
     def _resolved_budgets(self) -> dict:
         """Plan-aware limits served to the UI. Presets are resolved from the
@@ -536,16 +551,54 @@ class Daemon:
         """Plan each tool's live poller inferred from its credential tier."""
         from . import config as config_mod
 
+        offline = self._credential_tiers()
         detected = {}
         for tool in config_mod.PLAN_PRESETS:
             spec = config_mod.PLAN_PRESETS[tool]
             # Last OK result: a transient poll failure carries no plan_tier
-            # and must not flip the plan back to the default preset.
+            # and must not flip the plan back to the default preset. Falling
+            # back to the tier named in the credential keeps the plan right
+            # for a poller that is disabled or has never reached the provider.
             src = self._live_ok.get(tool) or self._live.get(tool) or {}
-            plan = config_mod.plan_from_tier(src.get("plan_tier"), spec["plans"])
+            tier = src.get("plan_tier") or offline.get(tool)
+            plan = config_mod.plan_from_tier(tier, spec["plans"])
             if plan:
                 detected[tool] = plan
         return detected
+
+    def _credential_tiers(self) -> dict:
+        """Plan tier each poller can read straight off its credential file.
+
+        Every registered poller is asked, enabled or not — this is a local
+        read, not a poll, and knowing the plan is what tells the UI which
+        windows the account even has. Cached for the process: a subscription
+        tier changes far less often than a snapshot is built.
+        """
+        if self._offline_tiers is None:
+            self._offline_tiers = live.credential_tiers(self.config.live_limits)
+        return self._offline_tiers
+
+    def _window_support(self) -> dict:
+        """Which rate-limit windows each tool actually meters.
+
+        Starts from the plan preset — a plan whose preset value is None does
+        not have that window (Codex on the Go tier is weekly-only) — and lets
+        a live poller correct it: what the provider reports about its own
+        windows beats any table shipped here. The extension drops the bars for
+        unsupported windows instead of scaling usage against a limit that does
+        not exist.
+        """
+        from . import config as config_mod
+
+        support = config_mod.resolve_windows(
+            plans=self.config.plans,
+            detected=self._detected_plans(),
+            overrides=self.config.budgets,
+        )
+        for tool, reported in self._live_windows.items():
+            support[tool] = {w: (live_key in reported) for w, live_key
+                             in (("5h", "five_hour"), ("weekly", "weekly"))}
+        return support
 
     def _effective_plans(self) -> dict:
         """Plan actually driving each tool's budgets, for the UI's plan badge:

@@ -18,11 +18,31 @@ RestartSec=5
 Slice=background.slice
 
 # Hardening: the daemon only reads AI tool logs and writes its own data dir.
+# It does hold provider OAuth tokens in memory while a live poller runs, so
+# the sandbox is worth more than the usual "it's just a monitor".
 NoNewPrivileges=true
 ProtectSystem=strict
 ReadWritePaths=-%h/.local/share/ai-token-monitor
 PrivateTmp=true
+PrivateDevices=true
+ProtectClock=true
+ProtectHostname=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+# The pollers speak HTTPS and D-Bus, nothing else.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+# Usage history is nobody else's business: keep the database (and anything
+# else the daemon writes) owner-only.
+UMask=0077
 MemoryMax=256M
+
+# Deliberately NOT set:
+#   ProtectProc / ProcSubset — the Antigravity poller finds the IDE's local
+#     quota server by reading /proc/<pid>/{comm,cmdline,fd} of its own user.
+#   ProtectHome — every adapter reads a tool's dot-dir under $HOME.
+#   MemoryDenyWriteExecute — PyGObject's libffi closures need W|X pages.
 
 [Install]
 WantedBy=default.target

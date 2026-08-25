@@ -1,4 +1,13 @@
-from ai_token_monitor.config import AUTO_HEADROOM, plan_from_tier, resolve_budgets
+from ai_token_monitor.config import (
+    AUTO_HEADROOM,
+    Config,
+    PLAN_PRESETS,
+    plan_from_tier,
+    plan_windows,
+    resolve_budgets,
+    resolve_windows,
+    validate_budgets,
+)
 
 
 def test_defaults_are_lowest_tiers():
@@ -74,3 +83,68 @@ def test_plan_from_tier_matches_provider_strings():
     assert plan_from_tier("enterprise_raven", claude_plans) is None
     assert plan_from_tier(None, claude_plans) is None
     assert plan_from_tier("plus", ("plus", "pro")) == "plus"
+
+
+def test_weekly_only_plan_has_no_5h_budget():
+    """Codex on ChatGPT Go is metered weekly only — no 5h denominator to
+    scale a bar with, so the key must be absent rather than 0 (which reads
+    as 'unknown budget' elsewhere)."""
+    budgets = resolve_budgets(plans={"codex": "go"}, mode="preset",
+                              overrides={})
+    assert "codex_5h" not in budgets
+    assert budgets["codex_weekly"] == 8.0
+    assert budgets["claude_5h"] == 15.0  # other tools unaffected
+
+
+def test_weekly_only_plan_ignores_auto_peaks_for_the_missing_window():
+    budgets = resolve_budgets(
+        plans={"codex": "go"}, mode="auto", overrides={},
+        peaks={"codex": {"5h": 900.0, "weekly": 1.0}})
+    assert "codex_5h" not in budgets
+
+
+def test_prolite_tier_maps_to_go_not_pro():
+    """The Go credential reports "prolite", which *contains* "pro" — plain
+    substring matching would hand a Go account the Pro tier's budgets and a
+    5h window it does not have."""
+    plans = PLAN_PRESETS["codex"]["plans"]
+    assert plan_from_tier("prolite", plans) == "go"
+    assert plan_from_tier("pro", plans) == "pro"
+    assert plan_from_tier("plus", plans) == "plus"
+
+
+def test_plan_windows_reports_the_missing_window():
+    assert plan_windows("codex", "go") == {"5h": False, "weekly": True}
+    assert plan_windows("codex", "plus") == {"5h": True, "weekly": True}
+    assert plan_windows("claude_code", "max_20x") == {"5h": True, "weekly": True}
+    # Unknown tool (third-party adapter): assume the usual pair.
+    assert plan_windows("whatever", None) == {"5h": True, "weekly": True}
+
+
+def test_resolve_windows_follows_plan_precedence():
+    # Explicit config wins over the credential-detected plan.
+    assert resolve_windows({"codex": "plus"}, {"codex": "go"})["codex"]["5h"]
+    assert resolve_windows({}, {"codex": "go"})["codex"]["5h"] is False
+    # Naming an explicit ceiling asserts the window exists.
+    assert resolve_windows({}, {"codex": "go"},
+                           {"codex_5h": 12.0})["codex"]["5h"] is True
+
+
+def test_junk_budgets_are_dropped_not_crashed_on():
+    """budgets reach the daemon from a hand-edited YAML and from any peer on
+    the session bus; they are consumed as numbers, so junk must be ignored
+    rather than raise out of a snapshot."""
+    cfg = Config({"budgets": {"claude_5h": "lots", "codex_weekly": None,
+                              "gemini_5h": True, "daily": -3, "weekly": 12.5}})
+    assert cfg.budgets == {"weekly": 12.5}
+    assert Config({"budgets": "nope"}).budgets == {}
+
+
+def test_validate_budgets_rejects_what_it_cannot_use():
+    assert validate_budgets({"claude_5h": 10}) is None
+    assert validate_budgets({}) is None
+    assert validate_budgets("nope")
+    assert validate_budgets({"claude_5h": "10"})
+    assert validate_budgets({"claude_5h": float("inf")})
+    assert validate_budgets({"claude_5h": -1})
+    assert validate_budgets({"claude_5h": True})
