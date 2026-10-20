@@ -29,7 +29,7 @@ def rec(ts, tool="claude_code", cost=1.0, dedup=None):
 
 def test_empty_store_is_calm(store):
     out = waybar_status(store, cfg())
-    assert out["text"] == "0%"
+    assert out["text"] == "—"
     assert out["class"] == "ok"
     assert out["tooltip"] == "no usage recorded"
     json.dumps(out)  # serializable
@@ -37,19 +37,18 @@ def test_empty_store_is_calm(store):
 
 def test_pressure_class_and_tooltip(store):
     now = time.time()
-    # default plans: claude pro -> 5h budget $15. $14 in-session = 93% -> danger
-    store.add([rec(now - 60, cost=14.0)])
-    out = waybar_status(store, cfg())
+    store.add([rec(now - 60, tool="gemini_cli", cost=14.0)])
+    out = waybar_status(store, cfg(budgets={"gemini_5h": 15, "gemini_weekly": 75}))
     assert out["class"] == "danger"
     assert out["percentage"] >= 90
-    assert "Claude Code" in out["tooltip"]
+    assert "agy" in out["tooltip"]
     assert "resets in" in out["tooltip"]  # both windows are active
 
 
 def test_idle_session_counts_zero_for_5h(store):
     now = time.time()
-    store.add([rec(now - 9 * 3600, cost=14.0, dedup="old")])  # expired session
-    out = waybar_status(store, cfg())
+    store.add([rec(now - 9 * 3600, tool="gemini_cli", cost=14.0, dedup="old")])
+    out = waybar_status(store, cfg(budgets={"gemini_5h": 15, "gemini_weekly": 75}))
     # 5h pressure gone; weekly ($14 of $75 = 19%) is what remains
     assert out["class"] == "ok"
     assert "5h $0.00" in out["tooltip"] or "5h 0%" in out["tooltip"]
@@ -87,3 +86,23 @@ def test_plus_plan_keeps_both_windows(store, tmp_path):
     isolated = {"codex": {"credentials": str(tmp_path / "absent.json")}}
     out = waybar_status(store, cfg(plans={"codex": "plus"}, live_limits=isolated))
     assert "5h" in out["tooltip"] and "wk" in out["tooltip"]
+
+
+def test_subscription_spend_never_becomes_a_quota_percentage(store):
+    store.add([rec(time.time(), cost=99999)])
+    out = waybar_status(store, cfg())
+    assert out["text"] == "—"
+    assert out["percentage"] is None
+    assert "%" not in out["tooltip"]
+    assert "limit unavailable" in out["tooltip"]
+
+
+def test_confirmed_quota_and_timestamp_are_used_instead_of_spend(store):
+    now = time.time()
+    store.add([rec(now, cost=99999)])
+    store.save_confirmed_limits("claude_code", {
+        "status": "ok", "fetched_at": now,
+        "windows": {"weekly": {"used_percent": 25, "resets_at": now + 10000}}})
+    out = waybar_status(store, cfg())
+    assert out["text"] == "25%"
+    assert "last confirmed" in out["tooltip"]

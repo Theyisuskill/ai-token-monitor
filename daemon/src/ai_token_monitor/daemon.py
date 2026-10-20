@@ -64,8 +64,11 @@ class Daemon:
         # Live-limit pollers (opt-in, network): latest normalized result per
         # tool, plus a per-poller "busy" guard so polls never overlap.
         self.pollers = live.create_enabled(config.live_limits)
-        self._live: dict[str, dict] = {}
-        self._live_ok: dict[str, dict] = {}
+        self._live_ok = self.store.confirmed_limits()
+        if self._live_ok.get("codex", {}).get("source") != "local_log":
+            self._live_ok.pop("codex", None)
+        self._live = {tool: {"status": "cached", "fetched_at": time.time()}
+                      for tool in self._live_ok}
         #: Window keys ("five_hour"/"weekly") each poller has ever reported.
         self._live_windows: dict[str, set[str]] = {}
         #: Plan tier read off a credential, no poll needed (see _window_support).
@@ -218,8 +221,12 @@ class Daemon:
         # leave a trace, but a steady state shouldn't log a line per poll.
         status = result.get("status") or "error"
         if status == "ok":
-            self._live_ok[tool] = result
-            self._note_samples(tool, result)
+            previous = self._live_ok.get(tool, {})
+            if result.get("windows") and result.get("fetched_at", 0) >= previous.get("fetched_at", 0):
+                self._live_ok[tool] = result
+                if result != previous:
+                    self.store.save_confirmed_limits(tool, result)
+                    self._note_samples(tool, result)
             self._warn_plan_mismatch(tool, result.get("plan_tier"))
             # Which windows the provider actually meters, accumulated across
             # polls: the union, so one response that happens to omit a window
@@ -290,6 +297,9 @@ class Daemon:
             status[tool] = {"status": res.get("status"),
                             "fetched_at": res.get("fetched_at"),
                             "plan_tier": (data or res).get("plan_tier")}
+            confirmed = self._live_ok.get(tool)
+            if confirmed:
+                status[tool]["last_confirmed"] = confirmed
             # `quiet` = "nothing to report", not "something is wrong": the UI
             # skips its amber note so the warning keeps meaning something.
             if res.get("status") in live.QUIET_STATUSES:
@@ -309,8 +319,9 @@ class Daemon:
                 if entry is not None:
                     real = {"used_percent": w.get("used_percent"),
                             "resets_at": w.get("resets_at"),
-                            "source": "provider"}
-                    depletes = projection.project_depletion(
+                            "source": data.get("source", "provider"),
+                            "confirmed_at": data.get("fetched_at")}
+                    depletes = None if stale else projection.project_depletion(
                         self._live_samples.get((tool, key), []), now,
                         w.get("resets_at"))
                     if depletes is not None:
@@ -355,6 +366,15 @@ class Daemon:
         inserted = 0
         for path in sorted(paths):
             try:
+                migrate = getattr(adapter, "dedup_migration", None)
+                migration = f"codex-cumulative-v1:{path}"
+                if migrate and not self.store.migration_done(migration):
+                    with path.open(encoding="utf-8", errors="replace") as stream:
+                        removed = self.store.migrate_dedup_keys(
+                            adapter.name, migrate(path, stream), migration)
+                    if removed:
+                        log.info("%s: removed %d repeated usage records", adapter.name, removed)
+                        self._schedule_emit()
                 inserted += self._tail(adapter, path)
             except OSError as exc:
                 log.warning("%s: cannot read %s: %s", adapter.name, path, exc)
@@ -502,6 +522,7 @@ class Daemon:
             # the Summary's week-over-week spend delta.
             "daily": self.store.daily_series(time.time() - 14 * 86400.0),
             "budgets": self._resolved_budgets(),
+            "confirmed_only": ["claude_code", "codex"],
             # Per-tool {"5h": bool, "weekly": bool} — not every plan meters
             # both (Codex Go: weekly allowance, no 5h session window).
             "windows": self._window_support(),
@@ -539,13 +560,15 @@ class Daemon:
                 }
                 for tool in config_mod.PLAN_PRESETS
             }
-        return config_mod.resolve_budgets(
+        budgets = config_mod.resolve_budgets(
             plans=self.config.plans,
             mode=mode,
             overrides=self.config.budgets,
             peaks=peaks,
             detected=self._detected_plans(),
         )
+        return {key: 0.0 if key.startswith(("claude_", "codex_")) else value
+                for key, value in budgets.items()}
 
     def _detected_plans(self) -> dict:
         """Plan each tool's live poller inferred from its credential tier."""

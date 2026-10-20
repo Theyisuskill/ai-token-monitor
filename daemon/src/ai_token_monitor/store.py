@@ -6,6 +6,7 @@ Single-threaded by design — everything runs on the GLib main loop.
 from __future__ import annotations
 
 import logging
+import json
 import sqlite3
 import time
 from datetime import date
@@ -37,6 +38,15 @@ CREATE TABLE IF NOT EXISTS file_state (
     path   TEXT PRIMARY KEY,
     inode  INTEGER NOT NULL,
     offset INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS confirmed_limits (
+    tool TEXT PRIMARY KEY,
+    payload TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS migrations (
+    name TEXT PRIMARY KEY
 );
 """
 
@@ -89,6 +99,52 @@ class Store:
 
     def close(self) -> None:
         self._db.close()
+
+    def migration_done(self, name: str) -> bool:
+        return self._db.execute("SELECT 1 FROM migrations WHERE name = ?", (name,)).fetchone() is not None
+
+    def migrate_dedup_keys(self, tool: str, mappings, name: str) -> int:
+        """Rekey known records and remove proven repeats in one transaction.
+
+        Unavailable logs and all other providers remain untouched. A failed
+        read rolls back both changes and the completion marker, allowing retry.
+        """
+        if self.migration_done(name):
+            return 0
+        removed = 0
+        with self._db:
+            for old, new in mappings:
+                if old == new:
+                    continue
+                exists = self._db.execute(
+                    "SELECT 1 FROM usage WHERE tool=? AND dedup_key=?", (tool, new)).fetchone()
+                if exists:
+                    removed += self._db.execute(
+                        "DELETE FROM usage WHERE tool=? AND dedup_key=?", (tool, old)).rowcount
+                else:
+                    self._db.execute(
+                        "UPDATE usage SET dedup_key=? WHERE tool=? AND dedup_key=?", (new, tool, old))
+            self._db.execute("INSERT INTO migrations (name) VALUES (?)", (name,))
+        return removed
+
+    def confirmed_limits(self) -> dict[str, dict]:
+        results = {}
+        for tool, payload in self._db.execute("SELECT tool, payload FROM confirmed_limits"):
+            try:
+                result = json.loads(payload)
+            except ValueError:
+                continue
+            if isinstance(result, dict) and result.get("status") == "ok":
+                results[tool] = result
+        return results
+
+    def save_confirmed_limits(self, tool: str, result: dict) -> None:
+        if result.get("status") != "ok" or not result.get("windows"):
+            return
+        with self._db:
+            self._db.execute(
+                "INSERT OR REPLACE INTO confirmed_limits (tool, payload) VALUES (?, ?)",
+                (tool, json.dumps(result)))
 
     # -- usage ---------------------------------------------------------------
 

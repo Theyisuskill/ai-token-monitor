@@ -57,7 +57,8 @@ def waybar_status(store, cfg) -> dict:
         return f"{days}d {hours}h" if hours else f"{days}d"
 
     now = time.time()
-    max_pct = 0.0
+    max_pct = None
+    confirmed = store.confirmed_limits()
     lines = []
     for tool in store.tools_seen():
         prefix = prefixes.get(tool, tool)
@@ -72,12 +73,25 @@ def waybar_status(store, cfg) -> dict:
                  budgets.get(f"{prefix}_weekly", 0.0))):
             if supported.get(key) is False:
                 continue
+            if tool in ("claude_code", "codex"):
+                result, stale = live.effective_live(
+                    {"status": "cached"}, confirmed.get(tool), now)
+                window = (result or {}).get("windows", {}).get(
+                    "five_hour" if key == "5h" else "weekly")
+                if window:
+                    pct = window["used_percent"]
+                    max_pct = max(max_pct or 0.0, pct)
+                    stamp = time.strftime("%Y-%m-%d %H:%M", time.localtime(result["fetched_at"]))
+                    parts.append(f"{label} {pct:g}% (last confirmed {stamp})")
+                else:
+                    parts.append(f"{label} limit unavailable")
+                continue
             anchor = store.session_anchor(tool, span, lookback)
             cost = (store.summary(anchor, tool=tool)["totals"]["cost_usd"]
                     if anchor else 0.0)
             if budget > 0:
                 pct = cost / budget * 100
-                max_pct = max(max_pct, pct)
+                max_pct = max(max_pct or 0.0, pct)
                 part = f"{label} {round(pct)}% (${cost:.2f}/${budget:.0f}"
             else:
                 part = f"{label} ${cost:.2f}"
@@ -88,11 +102,11 @@ def waybar_status(store, cfg) -> dict:
             parts.append(part)
         lines.append(f"{TOOL_LABELS.get(tool, tool)} · " + " · ".join(parts))
 
-    level = ("danger" if max_pct >= 90 else
-             "warn" if max_pct >= 70 else "ok")
+    level = ("danger" if (max_pct or 0) >= 90 else
+             "warn" if (max_pct or 0) >= 70 else "ok")
     return {
-        "text": f"{round(max_pct)}%",
-        "percentage": round(max_pct),
+        "text": f"{round(max_pct)}%" if max_pct is not None else "—",
+        "percentage": round(max_pct) if max_pct is not None else None,
         "class": level,
         "tooltip": "\n".join(lines) or "no usage recorded",
     }

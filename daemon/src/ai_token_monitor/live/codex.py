@@ -1,4 +1,8 @@
-"""OpenAI Codex / ChatGPT subscription real 5h + weekly limits poller.
+"""Codex quotas: local rollout logs by default, legacy API mode opt-in.
+
+The default ``source: local`` reads provider-confirmed ``rate_limits`` from
+rollout events without HTTP; see ``codex_logs.py``. The API implementation
+below is used only with an explicit ``source: api`` setting.
 
 The Codex CLI writes its OAuth credential to ``~/.codex/auth.json`` (honouring
 ``$CODEX_HOME``), shape::
@@ -62,6 +66,7 @@ from ..models import iso_to_epoch
 from . import register
 from . import http as _http
 from .base import LivePoller
+from .codex_logs import LocalLimitsReader
 
 log = logging.getLogger(__name__)
 
@@ -254,6 +259,15 @@ class CodexLimitsPoller(LivePoller):
     name = "codex"
     tool = "codex"
 
+    def __init__(self, settings):
+        super().__init__(settings)
+        self._local = LocalLimitsReader(self._sessions_root(settings))
+
+    @classmethod
+    def _sessions_root(cls, settings: dict[str, Any]) -> Path:
+        root = settings.get("sessions_root")
+        return Path(root).expanduser() if root else cls._resolve_cred(settings).parent / "sessions"
+
     @staticmethod
     def _resolve_cred(settings: dict[str, Any]) -> Path:
         override = settings.get("credentials")
@@ -264,7 +278,8 @@ class CodexLimitsPoller(LivePoller):
     @classmethod
     def is_available(cls, settings: dict[str, Any]) -> bool:
         # Not the base implementation: the default path depends on $CODEX_HOME.
-        return cls._resolve_cred(settings).exists()
+        return (cls._resolve_cred(settings).exists() or
+                cls._sessions_root(settings).is_dir())
 
     def _cred_path(self) -> Path:
         return self._resolve_cred(self.settings)
@@ -274,6 +289,10 @@ class CodexLimitsPoller(LivePoller):
         return plan_tier_from_tokens(read_tokens(cls._resolve_cred(settings)))
 
     def poll(self) -> dict[str, Any]:
+        # Local logs contain the provider's own quotas, received by Codex
+        # over its working connection. The monitor needs no separate VPN/API.
+        if self.settings.get("source", "local") != "api":
+            return self._local.poll()
         tokens = read_tokens(self._cred_path())
         if tokens is None:
             return _empty("credentials_missing")

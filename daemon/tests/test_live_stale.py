@@ -60,3 +60,19 @@ def test_nothing_left_after_all_windows_expire():
            "windows": {"five_hour": {"used_percent": 10.0, "resets_at": 2000.0}},
            "scoped": []}
     assert effective_live(ERR, old, now=3000.0, ttl_s=86400.0) == (None, False)
+
+
+def test_success_does_not_keep_showing_a_window_after_reset():
+    data, stale = effective_live(OK, None, now=6000.0, ttl_s=86400.0)
+    assert stale is False
+    assert "five_hour" not in data["windows"]
+    assert data["windows"]["weekly"]["used_percent"] == 64.0
+    assert "five_hour" in OK["windows"]  # cached response remains intact
+
+
+def test_success_also_expires_when_polling_stops():
+    assert effective_live(OK, None, now=2801.0) == (None, False)
+
+
+def test_success_with_only_expired_windows_serves_nothing():
+    assert effective_live(OK, None, now=100000.0, ttl_s=200000.0) == (None, False)

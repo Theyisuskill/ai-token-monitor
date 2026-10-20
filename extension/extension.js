@@ -15,6 +15,7 @@ import {Extension, gettext as _} from 'resource:///org/gnome/shell/extensions/ex
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
+import * as BarLevel from 'resource:///org/gnome/shell/ui/barLevel.js';
 
 const BUS_NAME = 'io.github.theyisuskill.AITokenMonitor';
 const OBJECT_PATH = '/io/github/theyisuskill/AITokenMonitor';
@@ -50,6 +51,16 @@ const REFRESH_INTERVAL_S = 120;
 
 // Shortest visible fill, so a 1% bar still reads as "started, barely".
 const MIN_FILL_PX = 4;
+
+/** CSS sizes are logical pixels; monitor/work-area dimensions are stage pixels. */
+function popupLayout(width, height, scale = 1, textScale = 1) {
+    scale = Math.max(1, scale);
+    const maxWidth = Math.max(1, Math.floor((width - 24) / scale));
+    const contentWidth = Math.max(1, Math.min(Math.round(360 * textScale), maxWidth - 40));
+    return {width: contentWidth, maxWidth,
+        maxHeight: Math.max(1, Math.floor((height - 24) / scale)),
+        compact: contentWidth < 320};
+}
 
 // History (GetHistory) is fetched lazily and cached: it scans far more rows
 // than a snapshot, and nothing in it changes meaningfully minute to minute.
@@ -128,9 +139,7 @@ function fmt(template, ...args) {
     return template.replace(/%[s%]/g, m => m === '%%' ? '%' : String(args[i++]));
 }
 
-/** Truncate with an ellipsis instead of pushing the popup wider: the menu has
- * a fixed width (.ai-menu), so a long translation or an extra detail clause
- * must give way rather than overflow the card. */
+/** Keep translated labels inside the monitor-constrained popup width. */
 function ellipsize(label) {
     label.clutter_text.ellipsize = Pango.EllipsizeMode.END;
     return label;
@@ -243,15 +252,40 @@ function realWindowText(real) {
  * plus the data age when the poller is failing and the % is the last known
  * one (the bar shows a grey dot in that case). */
 function realDetailText(real, live) {
-    let text = realWindowText(real);
+    const parts = [realWindowText(real)].filter(Boolean);
     const now = Date.now() / 1000;
+    const confirmedAt = real?.confirmed_at ?? live?.last_confirmed?.fetched_at;
+    if (confirmedAt)
+        parts.push(fmt(_('Confirmed: %s'), confirmationTime(confirmedAt, true)));
     if (real?.depletes_at && real.depletes_at > now)
-        text += `  ·  ${fmt(_('runs out in %s'), spanStr(real.depletes_at - now))}`;
+        parts.push(fmt(_('runs out in %s'), spanStr(real.depletes_at - now)));
     if (live?.stale && live.data_fetched_at) {
         const ago = Math.max(0, now - live.data_fetched_at);
-        text += `  ·  ${fmt(_('data from %s ago'), spanStr(ago))}`;
+        parts.push(fmt(_('data from %s ago'), spanStr(ago)));
     }
-    return text;
+    return parts.join('  ·  ');
+}
+
+function confirmationTime(timestamp, compact = false) {
+    const date = new Date(timestamp * 1000);
+    const today = date.toDateString() === new Date().toDateString();
+    return date.toLocaleString(undefined, {
+        ...(compact && today ? {} : {day: '2-digit', month: 'short',
+            ...(compact ? {} : {year: 'numeric'})}),
+        hour: '2-digit', minute: '2-digit',
+    });
+}
+
+function providerState(live, hasCurrent) {
+    if (!hasCurrent)
+        return {label: _('Unavailable'), style: 'ai-state-muted',
+            message: live?.last_confirmed ? _('Showing the last recorded data') : _('Waiting for confirmed limits')};
+    if (live?.stale || (live?.status && live.status !== 'ok'))
+        return {label: _('Saved data'), style: 'ai-state-saved',
+            message: _('Connection unavailable; using the last confirmation')};
+    return {label: _('Confirmed'), style: 'ai-state-confirmed',
+        message: live?.last_confirmed?.source === 'local_log'
+            ? _('Local Codex log') : _('Confirmed by the provider')};
 }
 
 /** 'default_claude_max_20x' -> 'Max 20x'; '' when unknown. Shown top-right of a
@@ -341,8 +375,9 @@ class ProgressBarRow extends PopupMenu.PopupBaseMenuItem {
      * activation, so the menu stays open (tab navigation, not an action). */
     _init(title, cost, budget, tokens, extra = '', color = null, opts = {}) {
         const {warn: extraWarn = false, realPct = null, realStale = false,
-            realDot = true, onActivate = null} = opts;
+            realDot = true, onActivate = null, unavailable = false} = opts;
         super._init({reactive: !!onActivate, can_focus: !!onActivate});
+        this.add_style_class_name(opts.compact ? 'ai-limit-row ai-limit-compact' : 'ai-limit-row');
         this._onActivate = onActivate;
 
         // A provider-real percentage (from a live poller) drives the bar
@@ -362,8 +397,7 @@ class ProgressBarRow extends PopupMenu.PopupBaseMenuItem {
         });
 
         // Title row: window name left, percentage right (severity-colored).
-        // A teal "live" dot marks a bar sourced from the provider's real
-        // limit rather than the local estimate.
+        // The dot marks a confirmed provider value.
         const titleRow = new St.BoxLayout();
         titleRow.add_child(ellipsize(new St.Label({
             text: title,
@@ -382,37 +416,18 @@ class ProgressBarRow extends PopupMenu.PopupBaseMenuItem {
             }));
         }
         titleRow.add_child(new St.Label({
-            text: (real || budget > 0) ? `${Math.round(pct)}%` : formatCost(cost),
-            style_class: `ai-progress-percent ai-text-${sev}`,
+            text: unavailable && !real ? _('Limit unavailable')
+                : (real || budget > 0) ? `${Math.round(pct)}%` : formatCost(cost),
+            style_class: unavailable && !real ? 'ai-progress-unavailable'
+                : `ai-progress-percent ai-text-${sev}`,
         }));
 
-        // Track + fill. MeterBar sizes the fill from the track's real width,
-        // so the bar always matches the percentage printed above it.
-        // Healthy fill wears CodexBar's teal (.ai-fill-ok); the warn/danger
-        // severities take over past 70/90%. The tool's brand color lives on
-        // the header dot, so the meters stay uniform like CodexBar's.
-        const track = new MeterBar([{
-            fraction: pct / 100,
-            styleClass: `ai-progress-fill ai-fill-${sev}`,
-        }]);
-        const fill = track.firstSegment;
-
-        // Fill-in sweep on first map (every menu open rebuilds the rows). A
-        // paint-level scale, so the allocation above keeps owning the layout.
-        if (fill && St.Settings.get().enable_animations) {
-            fill.set_pivot_point(0, 0.5);
-            fill.scale_x = 0;
-            const mapId = fill.connect('notify::mapped', () => {
-                if (!fill.mapped)
-                    return;
-                fill.disconnect(mapId);
-                fill.ease({
-                    scale_x: 1,
-                    duration: 350,
-                    mode: Clutter.AnimationMode.EASE_OUT_QUAD,
-                });
-            });
-        }
+        // Use GNOME Shell's own read-only level widget and theme accent.
+        const track = new BarLevel.BarLevel({
+            style_class: 'slider ai-native-level', x_expand: true,
+            value: pct / 100,
+            accessible_name: title,
+        });
 
         let detail;
         if (cost <= 0 && tokens <= 0 && extra) {
@@ -428,8 +443,6 @@ class ProgressBarRow extends PopupMenu.PopupBaseMenuItem {
                     ? fmt(_('%s of %s  ·  %s tokens'),
                         formatCost(cost), formatCost(budget), formatTokens(tokens))
                     : fmt(_('%s tokens'), formatTokens(tokens));
-            if (extra)
-                detail += `  ·  ${extra}`;
         }
         const subtitle = ellipsize(new St.Label({
             text: detail,
@@ -440,8 +453,19 @@ class ProgressBarRow extends PopupMenu.PopupBaseMenuItem {
         }));
 
         vbox.add_child(titleRow);
-        vbox.add_child(track);
-        vbox.add_child(subtitle);
+        if ((!unavailable || real) && (real || budget > 0))
+            vbox.add_child(track);
+        if (!opts.compact)
+            vbox.add_child(subtitle);
+        if (extra && detail !== extra) {
+            const metadata = new St.Label({
+                text: extra, x_expand: true,
+                style_class: extraWarn ? 'ai-progress-meta ai-text-warn' : 'ai-progress-meta',
+            });
+            metadata.clutter_text.line_wrap = true;
+            metadata.clutter_text.line_wrap_mode = Pango.WrapMode.WORD_CHAR;
+            vbox.add_child(metadata);
+        }
         this.add_child(vbox);
     }
 
@@ -498,9 +522,28 @@ class Indicator extends PanelMenu.Button {
         // diffed to announce "fresh window" when one expires.
         this._lastSessions = new Map();
         this._resetTimerId = 0;
-        // Fixed card width (.ai-menu): every tab then opens the same size
-        // instead of the popup resizing itself around each tab's longest line.
+        // Retain GNOME's popup-menu-content theme; only constrain geometry.
         this.menu.box.add_style_class_name('ai-menu');
+        // Long histories and stacked layouts stay inside the current monitor.
+        // The native scroll view keeps every tab reachable on smaller screens.
+        this._scrollView = new St.ScrollView({
+            style_class: 'ai-menu-scroll',
+            hscrollbar_policy: St.PolicyType.NEVER,
+            vscrollbar_policy: St.PolicyType.AUTOMATIC,
+            overlay_scrollbars: false,
+        });
+        this.menu._boxPointer.bin.set_child(null);
+        if (this._scrollView.set_child)
+            this._scrollView.set_child(this.menu.box);
+        else
+            this._scrollView.add_actor(this.menu.box);
+        this.menu._boxPointer.bin.set_child(this._scrollView);
+        this._interfaceSettings = new Gio.Settings({schema_id: 'org.gnome.desktop.interface'});
+        Main.layoutManager.connectObject('monitors-changed', () => this._rebuildMenu(), this);
+        St.ThemeContext.get_for_stage(global.stage).connectObject(
+            'notify::scale-factor', () => this._rebuildMenu(), this);
+        this._interfaceSettings.connectObject(
+            'changed::text-scaling-factor', () => this._rebuildMenu(), this);
         // Switcher: which tab is open — 'summary' (unified KPI view), 'history'
         // (the backwards-looking view) or a tool id (that provider's detailed
         // card). Persists while the indicator lives so reopening the menu keeps
@@ -512,7 +555,6 @@ class Indicator extends PanelMenu.Button {
         this._historyAt = 0;
         this._historyBusy = false;
 
-        this._rebuildMenu();
         this._initProxy();
 
         // Opening the menu always re-syncs: the daemon rescans its logs and
@@ -600,6 +642,8 @@ class Indicator extends PanelMenu.Button {
     }
 
     _setUnavailable() {
+        if (this._destroyed)
+            return;
         this._label.text = '';
         this._panelIcon.gicon = this._defaultPanelGicon;
         this._snapshot = null;
@@ -666,6 +710,11 @@ class Indicator extends PanelMenu.Button {
         const now = Date.now() / 1000;
         const current = new Map();
         for (const t of this._snapshot?.five_hours?.tools ?? []) {
+            if (this._confirmedOnly(t.tool)) {
+                if (t.real?.resets_at && !this._snapshot?.live?.[t.tool]?.stale)
+                    current.set(t.tool, t.real.resets_at);
+                continue;
+            }
             // A weekly-only plan has no session to announce the reset of.
             if (t.session_active && t.resets_at && this._metersWindow(t.tool, '5h'))
                 current.set(t.tool, t.resets_at);
@@ -711,6 +760,8 @@ class Indicator extends PanelMenu.Button {
         if (this._snapshot?.ui?.alerts === false)
             return;
         for (const id of this._activeTools()) {
+            if (this._confirmedOnly(id) && this._snapshot?.live?.[id]?.stale)
+                continue;
             const style = toolStyle(id);
             for (const [period, window, label, budgetKey] of [
                 ['five_hours', '5h', _('Session (5h)'), `${style.prefix}_5h`],
@@ -791,8 +842,16 @@ class Indicator extends PanelMenu.Button {
     }
 
     _budget(key) {
+        // Subscription quotas cannot be reconstructed from API-equivalent
+        // spend. These providers use confirmed values exclusively.
+        if (key.startsWith('claude_') || key.startsWith('codex_'))
+            return 0;
         const v = this._snapshot?.budgets?.[key];
         return Number.isFinite(v) && v > 0 ? v : 0;
+    }
+
+    _confirmedOnly(id) {
+        return id === 'claude_code' || id === 'codex';
     }
 
     /** Tools to render: whatever the daemon has usage data for, in a stable
@@ -857,7 +916,8 @@ class Indicator extends PanelMenu.Button {
             return;
         }
         if (!top) {
-            this._label.text = '';
+            this._label.text = '—';
+            this._label.style_class = 'ai-panel-label';
             return;
         }
         const pct = Math.min(999, Math.round(top.pct));
@@ -866,26 +926,38 @@ class Indicator extends PanelMenu.Button {
             `ai-panel-label ai-text-${severityClass(top.pct)}`;
     }
 
-    /** Tab bar: a "Summary" KPI tab, then one tab per active tool. Clicking a
-     * tab swaps the card below without growing the popup (CodexBar-style). */
+    /** Native icon buttons wrap into rows when the monitor/text scale needs it. */
     _addTabBar(active, sel) {
         const item = new PopupMenu.PopupBaseMenuItem(
             {reactive: false, can_focus: false, style_class: 'ai-tabbar-item'});
-        const row = new St.BoxLayout({style_class: 'ai-tabbar', x_expand: true});
+        const tabs = new St.BoxLayout({vertical: true, style_class: 'ai-tabbar', x_expand: true});
+        const count = active.length + 2;
+        const width = this._layout?.width ?? 360;
+        const textScale = this._interfaceSettings.get_double('text-scaling-factor');
+        const maxColumns = Math.max(1, Math.floor(width / (44 * textScale)));
+        const columns = Math.ceil(count / Math.ceil(count / maxColumns));
+        let row, index = 0;
         const addTab = (id, label, dotColor, iconName = null, a11y = null) => {
+            if (index++ % columns === 0) {
+                row = new St.BoxLayout({style_class: 'ai-tab-row', x_expand: true});
+                row.layout_manager.homogeneous = true;
+                tabs.add_child(row);
+            }
             const btn = new St.Button({
-                style_class: sel === id ? 'ai-tab ai-tab-active' : 'ai-tab',
-                x_expand: false,
+                style_class: 'button ai-tab',
+                x_expand: true,
                 can_focus: true,
                 // An icon-only tab still has to announce itself to a screen
                 // reader, and the label is what it would have read.
                 accessible_name: a11y ?? label,
             });
+            if (sel === id)
+                btn.add_style_pseudo_class('checked');
             const box = new St.BoxLayout({style_class: 'ai-tab-box'});
             const icon = iconName
                 ? new St.Icon({icon_name: iconName, style_class: 'ai-tab-icon',
                                y_align: Clutter.ActorAlign.CENTER})
-                : dotColor && this._brandIcon(id, 'ai-tab-icon', dotColor);
+                : dotColor && this._brandIcon(id, 'ai-tab-icon');
             if (icon) {
                 box.add_child(icon);
             } else if (dotColor) {
@@ -907,14 +979,13 @@ class Indicator extends PanelMenu.Button {
             });
             row.add_child(btn);
         };
-        addTab('summary', _('Summary'), null);
+        addTab('summary', '', null,
+            'view-grid-symbolic', _('Summary'));
         for (const id of active)
-            addTab(id, toolStyle(id).short, toolStyle(id).color);
-        // Icon-only: with Summary plus a tab per provider the row is already
-        // close to the card's fixed width, and a sixth label would squeeze the
-        // rest. The stock symbolic reads as "recent" on every icon theme.
+            addTab(id, '', toolStyle(id).color, null, toolStyle(id).label);
+        // All icon buttons retain full accessible labels.
         addTab('history', '', null, 'document-open-recent-symbolic', _('History'));
-        item.add_child(row);
+        item.add_child(tabs);
         this.menu.addMenuItem(item);
     }
 
@@ -1226,32 +1297,12 @@ class Indicator extends PanelMenu.Button {
      * added after this by _rebuildMenu. */
     _addSummary(active) {
         const totals = p => this._snapshot?.[p]?.totals ?? {cost_usd: 0, total_tokens: 0};
-        const spend = (label, p, note = '', noteClass = undefined) =>
-            this._addKeyValueRow(label,
-                `${formatCost(totals(p).cost_usd)}  ·  ${formatTokens(totals(p).total_tokens)}`,
-                note, noteClass);
+        this._addSectionLabel(_('Usage overview'));
+        for (const [label, period] of [[_('Today'), 'today'], [_('This week'), 'week'], [_('This month'), 'month']]) {
+            this._addKeyValueRow(label, formatCost(totals(period).cost_usd),
+                fmt(_('%s tokens'), formatTokens(totals(period).total_tokens)));
+        }
 
-        this._addSectionLabel(_('Spend · all providers'));
-        spend(_('Today'), 'today');
-
-        // Week-over-week trend (up = spending more = amber) and a simple
-        // linear month-end projection give the raw totals some context.
-        const delta = this._weekDelta();
-        spend(_('This week'), 'week',
-            delta === null
-                ? '' : `${delta >= 0 ? '↑' : '↓'}${Math.abs(Math.round(delta))}%`,
-            delta !== null && delta >= 0
-                ? 'ai-kv-note ai-text-warn' : 'ai-kv-note ai-delta-down');
-        const now = new Date();
-        const dayOfMonth = now.getDate();
-        const daysInMonth =
-            new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
-        const monthCost = totals('month').cost_usd;
-        spend(_('This month'), 'month',
-            dayOfMonth >= 3 && monthCost > 0
-                ? fmt(_('≈ %s at close'),
-                    formatCost(monthCost / dayOfMonth * daysInMonth))
-                : '');
 
         // One compact bar per provider — its most-pressured window — sorted
         // most-critical first (cost-only rows land last). The teal live dot
@@ -1269,6 +1320,7 @@ class Indicator extends PanelMenu.Button {
                     `${s.short} · ${w.label}`, w.cost ?? 0, 0, w.tokens ?? 0,
                     w.realBlock
                         ? realDetailText(w.realBlock, liveInfo)
+                        : this._confirmedOnly(id) ? _('Waiting for confirmed limits')
                         : w.resets_at
                             ? realWindowText({resets_at: w.resets_at}) : '',
                     s.color, {
@@ -1276,6 +1328,8 @@ class Indicator extends PanelMenu.Button {
                         realPct: w.pct,
                         realStale: !!liveInfo?.stale,
                         realDot: w.real,
+                        unavailable: this._confirmedOnly(id) && w.pct === null,
+                        compact: true,
                         onActivate: () => {
                             this._selected = id;
                             this._rebuildMenu();
@@ -1284,8 +1338,6 @@ class Indicator extends PanelMenu.Button {
             }
         }
 
-        this._addSpendSplit(active);
-        this._addLinksSection(active);
     }
 
     /** Thin stacked bar of the rolling week's spend by provider (brand
@@ -1429,16 +1481,17 @@ class Indicator extends PanelMenu.Button {
 
         // Header: brand glyph (dot fallback) + name (left), plan tier (or
         // weekly spend) on the right.
-        const header = new PopupMenu.PopupBaseMenuItem({reactive: false});
+        const header = new PopupMenu.PopupBaseMenuItem({reactive: false,
+            style_class: 'ai-provider-header'});
         header.add_child(this._brandIcon(id, 'ai-brand-icon', style.color) ??
             new St.Label({
                 text: '●', style: `color: ${style.color};`,
                 style_class: 'ai-tool-dot', y_align: Clutter.ActorAlign.CENTER,
             }));
-        header.add_child(new St.Label({
+        header.add_child(ellipsize(new St.Label({
             text: style.label, style_class: 'ai-tool-name',
             x_expand: true, y_align: Clutter.ActorAlign.CENTER,
-        }));
+        })));
         // Prefer the plan actually driving the budgets (explicit config, else
         // credential-detected) over the raw credential tier — the tier can
         // lag the configured plan (org Max 20x still reports max_5x).
@@ -1450,18 +1503,39 @@ class Indicator extends PanelMenu.Button {
         }));
         this.menu.addMenuItem(header);
 
-        // When the live poller is failing, the bars below silently fall back
-        // to the dollar estimate — say so, with the poller's own reason.
-        // `quiet` marks the states that aren't faults (the tool simply isn't
-        // running); nagging about those trains you to ignore the real ones.
-        if (live?.status && live.status !== 'ok' && !live.quiet) {
-            const err = new PopupMenu.PopupBaseMenuItem({reactive: false});
-            err.add_child(ellipsize(new St.Label({
-                text: fmt(_('live limits unavailable: %s'), String(live.status)),
-                style_class: 'ai-live-status',
-                x_expand: true,
-            })));
-            this.menu.addMenuItem(err);
+        const confirmed = live?.last_confirmed;
+        if (this._confirmedOnly(id) || live) {
+            const state = providerState(live, !!(fiveH.real || week.real));
+            const status = new PopupMenu.PopupBaseMenuItem({reactive: false,
+                style_class: 'ai-source-row'});
+            const body = new St.BoxLayout({vertical: true, x_expand: true,
+                style_class: 'ai-source-body'});
+            const heading = new St.BoxLayout({x_expand: true});
+            heading.add_child(ellipsize(new St.Label({text: state.message,
+                style_class: 'ai-source-title', x_expand: true})));
+            heading.add_child(new St.Label({text: state.label,
+                style_class: `ai-state-badge ${state.style}`}));
+            body.add_child(heading);
+            if (confirmed?.fetched_at) {
+                const timestamp = new St.Label({
+                    text: fmt(_('Last confirmed: %s'), confirmationTime(confirmed.fetched_at)),
+                    style_class: 'ai-source-time', x_expand: true});
+                timestamp.clutter_text.line_wrap = true;
+                timestamp.clutter_text.line_wrap_mode = Pango.WrapMode.WORD_CHAR;
+                body.add_child(timestamp);
+            }
+            status.add_child(body);
+            this.menu.addMenuItem(status);
+        }
+        if (this._confirmedOnly(id) && confirmed?.fetched_at) {
+            for (const [key, label] of [['five_hour', _('Session (5h)')], ['weekly', _('Weekly')]]) {
+                const period = key === 'weekly' ? 'week' : 'five_hours';
+                const old = confirmed.windows?.[key];
+                if (old && !this._toolData(period, id).real)
+                    this._addKeyValueRow(label,
+                        fmt(_('Last recorded: %s%%'), String(old.used_percent)),
+                        _('Historical data; current limit unavailable'));
+            }
         }
 
         const hourRate = this._toolData('hour', id).cost_usd;
@@ -1504,8 +1578,10 @@ class Indicator extends PanelMenu.Button {
             }
         } else {
             const real5 = fiveH.real, realWk = week.real;
-            const session = windowText(fiveH, budget5h, hourRate);
-            const weekly = windowText(week, budgetWk, dayRate);
+            const session = this._confirmedOnly(id)
+                ? {text: '', warn: false} : windowText(fiveH, budget5h, hourRate);
+            const weekly = this._confirmedOnly(id)
+                ? {text: '', warn: false} : windowText(week, budgetWk, dayRate);
             if (meters5h) {
                 this.menu.addMenuItem(new ProgressBarRow(
                     _('Session (5h)'), fiveH.cost_usd, budget5h, fiveH.total_tokens,
@@ -1513,12 +1589,13 @@ class Indicator extends PanelMenu.Button {
                         warn: real5 ? !!real5.depletes_at : session.warn,
                         realPct: real5 ? real5.used_percent : null,
                         realStale: stale,
+                        unavailable: this._confirmedOnly(id) && !real5,
                     }));
             }
             // Weekly, with a CodexBar-style pace line once the real % is known.
             let wkText = realWk ? realDetailText(realWk, live) : weekly.text;
             let wkWarn = realWk ? !!realWk.depletes_at : weekly.warn;
-            if (realWk) {
+            if (realWk && !stale) {
                 const p = paceText(realWk.used_percent, realWk.resets_at, WEEK_SPAN_S);
                 if (p) {
                     wkText += `  ·  ${p.text}`;
@@ -1531,6 +1608,7 @@ class Indicator extends PanelMenu.Button {
                     warn: wkWarn,
                     realPct: realWk ? realWk.used_percent : null,
                     realStale: stale,
+                    unavailable: this._confirmedOnly(id) && !realWk,
                 }));
 
             // On a weekly-only plan the last 5 hours are still worth seeing —
@@ -1596,9 +1674,25 @@ class Indicator extends PanelMenu.Button {
             `${formatCost(today.cost_usd)}  ·  ${formatTokens(today.total_tokens)}`);
         this._addKeyValueRow(_('This month'),
             `${formatCost(month.cost_usd)}  ·  ${formatTokens(month.total_tokens)}`);
+        this._addLinksSection([id]);
     }
 
     _rebuildMenu() {
+        if (this._renderedTab !== this._selected) {
+            const adjustment = this._scrollView?.vadjustment ?? this._scrollView?.vscroll?.adjustment;
+            if (adjustment)
+                adjustment.value = 0;
+            this._renderedTab = this._selected;
+        }
+        const monitor = (this.get_stage() ? Main.layoutManager.findMonitorForActor(this) : null) ?? Main.layoutManager.primaryMonitor;
+        if (monitor && this._scrollView) {
+            const scale = St.ThemeContext.get_for_stage(global.stage).scale_factor;
+            const area = global.workspace_manager.get_active_workspace().get_work_area_for_monitor(monitor.index);
+            const textScale = this._interfaceSettings.get_double('text-scaling-factor');
+            this._layout = popupLayout(area.width, area.height, scale, textScale);
+            this.menu.box.style = `width: ${this._layout.width}px; min-width: 0;`;
+            this._scrollView.style = `max-width: ${this._layout.maxWidth}px; max-height: ${this._layout.maxHeight}px;`;
+        }
         this.menu.removeAll();
 
         if (!this._snapshot) {
@@ -1677,18 +1771,19 @@ class Indicator extends PanelMenu.Button {
             .filter(([tool, v]) => (!tailTool || tool === tailTool) &&
                 v?.status && v.status !== 'ok' && !v.quiet)
             .map(([tool, v]) => `${toolStyle(tool).short}: ${v.status}`);
-        const footer = new PopupMenu.PopupBaseMenuItem({reactive: false});
+        const footer = new PopupMenu.PopupBaseMenuItem({reactive: false,
+            style_class: 'ai-footer-row'});
         footer.add_child(ellipsize(new St.Label({
-            text: failing.length ? `⚠ ${failing.join('  ·  ')}` : '',
-            style_class: 'ai-footer ai-text-warn',
+            text: failing.length ? _('Some limits could not be refreshed') : _('Local usage history'),
+            style_class: failing.length ? 'ai-footer ai-text-warn' : 'ai-footer',
             x_expand: true,
         })));
         const updatedAgo = Math.max(
             0, Date.now() / 1000 - (this._snapshot.updated ?? 0));
-        footer.add_child(new St.Label({
+        footer.add_child(ellipsize(new St.Label({
             text: fmt(_('updated %s ago'), spanStr(updatedAgo)),
             style_class: 'ai-footer',
-        }));
+        })));
         this.menu.addMenuItem(footer);
         this._addSettingsItem();
     }
@@ -1777,8 +1872,7 @@ class Indicator extends PanelMenu.Button {
                     continue;
                 bars.add_child(new St.Widget({
                     style_class: 'ai-spark-seg',
-                    style: `height: ${Math.max(1, Math.round(22 * cost / max))}px;` +
-                        ` background-color: ${toolStyle(tool).color};`,
+                    style: `height: ${Math.max(1, Math.round(22 * cost / max))}px;`,
                     x_expand: true,
                 }));
                 drew = true;
@@ -1844,6 +1938,7 @@ export default class AITokenMonitorExtension extends Extension {
     enable() {
         this._indicator = new Indicator(this);
         Main.panel.addToStatusArea(this.uuid, this._indicator, 0, 'right');
+        this._indicator._rebuildMenu();
     }
 
     disable() {

@@ -9,6 +9,60 @@ msgstr ""
 "Content-Transfer-Encoding: 8bit\n"
 "Plural-Forms: nplurals=2; plural=(n != 1);\n"
 
+msgid "Usage overview"
+msgstr "Resumen de consumo"
+
+msgid "Compared with last week"
+msgstr "Respecto a la semana anterior"
+
+msgid "Confirmed"
+msgstr "Confirmado"
+
+msgid "Saved data"
+msgstr "Guardado"
+
+msgid "Unavailable"
+msgstr "Sin datos"
+
+msgid "Showing the last recorded data"
+msgstr "Se muestra el último dato guardado"
+
+msgid "Waiting for confirmed limits"
+msgstr "Esperando límites confirmados"
+
+msgid "Connection unavailable; using the last confirmation"
+msgstr "Sin conexión; última confirmación guardada"
+
+msgid "Confirmed by the provider"
+msgstr "Confirmado por el proveedor"
+
+msgid "Last confirmed: %s"
+msgstr "Última confirmación: %s"
+
+msgid "Some limits could not be refreshed"
+msgstr "Algunos límites no se pudieron actualizar"
+
+msgid "Local usage history"
+msgstr "Historial local de consumo"
+
+msgid "Confirmed: %s"
+msgstr "Confirmado: %s"
+
+msgid "Local Codex log"
+msgstr "Registro local de Codex"
+
+msgid "Limit unavailable"
+msgstr "Límite no disponible"
+
+msgid "Last confirmed"
+msgstr "Última confirmación"
+
+msgid "Last recorded: %s%%"
+msgstr "Último registro: %s%%"
+
+msgid "Historical data; current limit unavailable"
+msgstr "Dato histórico; límite actual no disponible"
+
 msgid "limit reached"
 msgstr "límite alcanzado"
 

@@ -25,6 +25,45 @@ def test_add_dedups_on_tool_and_key(store):
     assert store.add([rec(now, tool="codex", dedup="same")]) == 1  # other tool ok
 
 
+def test_dedup_migration_rolls_back_on_interrupted_read(store):
+    store.add([rec(1000, tool="codex", dedup="old")])
+
+    def interrupted():
+        yield "old", "new"
+        raise OSError("log read interrupted")
+
+    with pytest.raises(OSError):
+        store.migrate_dedup_keys("codex", interrupted(), "interrupted")
+    assert not store.migration_done("interrupted")
+    assert store.add([rec(1000, tool="codex", dedup="old")]) == 0
+    assert store.migrate_dedup_keys("codex", [("old", "new")], "interrupted") == 0
+    assert store.add([rec(1000, tool="codex", dedup="new")]) == 0
+
+
+def test_dedup_migration_is_scoped_to_provider(store):
+    store.add([rec(1000, tool="codex", dedup="old"),
+               rec(1000, tool="codex", dedup="new"),
+               rec(1000, tool="claude_code", dedup="old")])
+    assert store.migrate_dedup_keys("codex", [("old", "new")], "scoped") == 1
+    assert store.summary(0)["totals"]["requests"] == 2
+    assert store.summary(0, tool="claude_code")["totals"]["requests"] == 1
+
+
+def test_confirmed_limits_survive_restart_and_failures_do_not_replace_them(tmp_path):
+    path = tmp_path / "cache.db"
+    result = {"status": "ok", "fetched_at": 1000,
+              "windows": {"weekly": {"used_percent": 25, "resets_at": 100000}}}
+    first = Store(path)
+    first.save_confirmed_limits("claude_code", result)
+    first.save_confirmed_limits("claude_code", {"status": "network"})
+    first.save_confirmed_limits("claude_code", {"status": "ok", "windows": {}})
+    first.close()
+    second = Store(path)
+    assert second.confirmed_limits() == {"claude_code": result}
+    assert second.summary(0)["totals"]["requests"] == 0
+    second.close()
+
+
 def test_summary_and_tools_seen(store):
     now = time.time()
     store.add([rec(now), rec(now - 10, tool="gemini_cli", cost=2.0)])

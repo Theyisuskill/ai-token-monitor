@@ -38,25 +38,26 @@ def effective_live(latest: dict[str, Any], last_ok: dict[str, Any] | None,
                    ) -> tuple[dict[str, Any] | None, bool]:
     """The poll result whose data should drive the UI, and whether it's stale.
 
-    While the latest poll is OK it wins. While it is failing, the previous OK
-    result keeps serving until it ages past ``ttl_s``; windows and scoped
-    entries whose reset has already passed are dropped (their percentage
-    refers to a window that no longer exists). ``(None, False)`` when nothing
-    usable is left.
+    Prefer the latest OK poll, otherwise use the previous OK result as stale.
+    In both cases enforce ``ttl_s`` and drop windows and scoped entries whose
+    reset has already passed: their percentage refers to a window that no
+    longer exists. ``(None, False)`` when nothing usable is left.
     """
-    if latest.get("status") == "ok":
-        return latest, False
-    if not last_ok:
+    fresh = latest.get("status") == "ok"
+    candidate = latest if fresh else last_ok
+    if not candidate:
         return None, False
-    if now - float(last_ok.get("fetched_at") or 0.0) > ttl_s:
+    if now - float(candidate.get("fetched_at") or 0.0) > ttl_s:
         return None, False
-    windows = {key: w for key, w in (last_ok.get("windows") or {}).items()
+    windows = {key: w for key, w in (candidate.get("windows") or {}).items()
                if not w.get("resets_at") or float(w["resets_at"]) > now}
-    scoped = [s for s in (last_ok.get("scoped") or [])
+    scoped = [s for s in (candidate.get("scoped") or [])
               if not s.get("resets_at") or float(s["resets_at"]) > now]
     if not windows and not scoped:
         return None, False
-    return {**last_ok, "windows": windows, "scoped": scoped}, True
+    if fresh and windows == candidate.get("windows", {}) and scoped == candidate.get("scoped", []):
+        return candidate, False
+    return {**candidate, "windows": windows, "scoped": scoped}, not fresh
 
 
 class LivePoller(ABC):

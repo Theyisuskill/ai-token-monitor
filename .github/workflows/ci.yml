@@ -30,3 +30,6 @@ jobs:
         run: |
           node --check extension/extension.js
           node --check extension/prefs.js
+
+      - name: Test quota display and alerts
+        run: node --test extension/tests/*.test.cjs

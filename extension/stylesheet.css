@@ -1,319 +1,66 @@
-/* AI Token Monitor — popup + panel styling.
- *
- * Visual language mirrors CodexBar: a dark card, thin fully-rounded "pill"
- * meters with a teal fill, and muted zinc-grey labels (label left, percentage
- * right). Severity (amber/red past 70/90%) is layered on top — that is this
- * app's own signal and stays uniform across tools. St CSS has no percentage
- * widths, so the meter fill is sized from the track's real allocation by the
- * MeterBar widget in extension.js — no pixel width to keep in sync here. */
+/* Native GNOME Shell popup. Colors, background, borders and focus styles
+ * come from the active Shell theme, including its accent and contrast mode.
+ * Width/height constraints are computed from the monitor work area in JS. */
+.ai-menu { min-width: 0; }
+.ai-menu .popup-menu-item:insensitive { color: inherit; }
+.ai-panel-label { font-size: 0.85em; font-weight: 600; padding-left: 4px; }
+.ai-text-warn { color: #e5a50a; }
+.ai-text-danger { color: #ed333b; }
+.ai-progress-percent.ai-text-warn { color: #e5a50a; }
+.ai-progress-percent.ai-text-danger { color: #ed333b; }
 
-/* CodexBar-ish palette (zinc neutrals + teal accent), for reference:
- *   text primary   #f4f4f5   secondary #a1a1aa   muted #71717a
- *   teal fill      #3aa7bf -> #49c3d1
- *   warn #f2b13a   danger #ff5f57 */
+/* Native buttons: :checked, hover and keyboard focus are theme-owned. */
+.ai-tabbar-item { padding: 4px 8px; }
+.ai-tabbar { spacing: 4px; }
+.ai-tab-row { spacing: 4px; }
+.ai-tab { padding: 6px; min-width: 0; }
+.ai-tab-box { spacing: 4px; }
+.ai-tab-icon { icon-size: 16px; }
+.ai-tab-label { font-size: 0.85em; }
+.ai-tab-dot { font-size: 0.7em; }
 
-/* -- popup card -------------------------------------------------------- */
+/* Flat list rows, like the desktop's own popup menus. */
+.ai-limit-row { padding: 6px 12px; }
+.ai-progress-container { spacing: 3px; }
+.ai-progress-title { font-size: 0.95em; }
+.ai-progress-percent { font-size: 1em; font-weight: 600; }
+.ai-progress-unavailable { font-size: 0.8em; }
+.ai-progress-subtitle, .ai-progress-meta { font-size: 0.8em; }
+.ai-native-level { height: 8px; -barlevel-height: 4px; }
+.ai-live-badge, .ai-live-badge-stale { font-size: 0.65em; margin-right: 5px; }
+.ai-live-badge-stale { color: #e5a50a; }
+.ai-section-label { font-size: 0.8em; font-weight: 600; padding-top: 2px; }
+.ai-model-name { font-size: 0.9em; }
+.ai-model-cost { font-size: 0.9em; font-weight: 600; }
+.ai-kv-note { font-size: 0.8em; margin-left: 8px; }
+.ai-brand-icon { icon-size: 16px; margin-right: 8px; }
+.ai-tool-dot { font-size: 0.8em; margin-right: 8px; }
+.ai-tool-name { font-weight: 700; }
+.ai-tool-cost { font-size: 0.85em; }
+.ai-provider-header { padding: 8px 12px 4px; }
+.ai-source-row { padding: 2px 12px 8px; }
+.ai-source-body { spacing: 4px; }
+.ai-source-title, .ai-source-time { font-size: 0.8em; }
+.ai-state-badge { font-size: 0.75em; margin-left: 6px; }
+.ai-state-saved { color: #e5a50a; }
+.ai-live-status { font-size: 0.85em; }
+.ai-link-button { font-size: 0.85em; padding: 4px 8px; margin-left: 4px; }
 
-/* Fixed card width: every tab (Summary or a provider) opens at the same size
- * instead of the popup resizing itself around each tab's longest line. Labels
- * that can outgrow it ellipsize in JS rather than pushing the card wider. */
-.ai-menu {
-    width: 390px;
-}
-
-/* -- top bar ---------------------------------------------------------- */
-
-.ai-panel-label {
-    font-size: 11px;
-    font-weight: 700;
-    padding-left: 4px;
-}
-
-/* Severity text colors (panel % and per-bar %). "ok" inherits the theme. */
-.ai-text-warn {
-    color: #f2b13a;
-}
-
-.ai-text-danger {
-    color: #ff5f57;
-}
-
-/* Downward spend trend (spending less): CodexBar teal. */
-.ai-delta-down {
-    color: #49c3d1;
-}
-
-/* Small right-side context note on a key/value row (Δ%, month projection). */
-.ai-kv-note {
-    font-size: 10px;
-    color: #71717a;
-    margin-left: 8px;
-}
-
-/* One provider's slice of the stacked week-spend bar (colored inline). */
-.ai-split-seg {
-    height: 6px;
-}
-
-/* Icon + amount legend under the stacked spend bar. */
-.ai-legend {
-    margin-top: 2px;
-}
-
-.ai-legend-cell {
-    margin-right: 14px;
-}
-
-.ai-legend-label {
-    font-size: 10px;
-    color: #a1a1aa;
-}
-
-/* Live-poller failure note under a provider header (bars are estimates). */
-.ai-live-status {
-    font-size: 10px;
-    color: #f2b13a;
-}
-
-/* Brand glyphs (icons/<tool>-symbolic.svg), tinted per tool via `color`. */
-.ai-brand-icon {
-    icon-size: 14px;
-    margin-right: 6px;
-}
-
-.ai-tab-icon {
-    icon-size: 12px;
-    margin-right: 5px;
-}
-
-/* Inline web-link buttons on the Summary "Links" rows. */
-.ai-link-button {
-    font-size: 10px;
-    color: #49c3d1;
-    padding: 2px 8px;
-    border-radius: 6px;
-    margin-left: 6px;
-}
-
-.ai-link-button:hover,
-.ai-link-button:focus {
-    background-color: rgba(73, 195, 209, 0.14);
-}
-
-/* -- provider switcher (tab bar) --------------------------------------- */
-
-.ai-tabbar-item {
-    padding: 2px 4px 4px 4px;
-}
-
-.ai-tabbar {
-    spacing: 4px;
-}
-
-/* Each tab: muted pill that brightens on hover; the active one wears a teal
- * wash. Mirrors CodexBar's provider switcher along the top of the card. */
-.ai-tab {
-    padding: 4px 9px;
-    border-radius: 8px;
-    color: #a1a1aa;
-    transition-duration: 150ms;
-}
-
-.ai-tab:hover {
-    background-color: rgba(255, 255, 255, 0.06);
-    color: #e4e4e7;
-}
-
-.ai-tab:focus {
-    background-color: rgba(255, 255, 255, 0.09);
-}
-
-.ai-tab-active {
-    background-color: rgba(73, 195, 209, 0.16);
-    color: #f4f4f5;
-}
-
-.ai-tab-active:hover {
-    background-color: rgba(73, 195, 209, 0.24);
-}
-
-.ai-tab-box {
-    spacing: 5px;
-}
-
-.ai-tab-dot {
-    font-size: 8px;
-}
-
-.ai-tab-label {
-    font-size: 11px;
-    font-weight: 600;
-}
-
-/* -- tool headers ------------------------------------------------------ */
-
-.ai-tool-dot {
-    font-size: 10px;
-    margin-right: 8px;
-}
-
-.ai-tool-name {
-    font-size: 13px;
-    font-weight: 800;
-    color: #f4f4f5;
-}
-
-.ai-tool-cost {
-    font-size: 11px;
-    font-weight: 600;
-    color: #a1a1aa;
-}
-
-/* -- progress rows ------------------------------------------------------ */
-
-.ai-progress-container {
-    padding: 2px 6px 6px 6px;
-    spacing: 3px;
-}
-
-.ai-progress-title {
-    font-size: 12px;
-    color: #a1a1aa;
-}
-
-.ai-progress-percent {
-    font-size: 12px;
-    font-weight: 700;
-    color: #e4e4e7;
-}
-
-/* Teal dot marking a bar sourced from the provider's real limit (live poll)
- * rather than the local dollar-scaled estimate. */
-.ai-live-badge {
-    font-size: 7px;
-    color: #49c3d1;
-    margin-right: 6px;
-}
-
-/* Same dot, greyed: the poller is failing and the % is the last known one. */
-.ai-live-badge-stale {
-    font-size: 7px;
-    color: #71717a;
-    margin-right: 6px;
-}
-
-/* The track takes the card's full content width (MeterBar sets x_expand) and
- * splits it in allocate — never give it a fixed width, or the fill and the
- * percentage beside it stop agreeing. */
-.ai-progress-track {
-    height: 6px;
-    border-radius: 3px;
-    background-color: rgba(255, 255, 255, 0.09);
-    margin-top: 5px;
-    margin-bottom: 5px;
-}
-
-.ai-progress-fill {
-    height: 6px;
-    border-radius: 3px;
-    background-gradient-direction: horizontal;
-}
-
-/* Healthy fill wears CodexBar's teal; warn/danger take over past 70/90%. */
-.ai-fill-ok {
-    background-gradient-start: #3aa7bf;
-    background-gradient-end: #49c3d1;
-}
-
-.ai-fill-warn {
-    background-gradient-start: #f2b13a;
-    background-gradient-end: #f59331;
-}
-
-.ai-fill-danger {
-    background-gradient-start: #ff5f57;
-    background-gradient-end: #e0322b;
-}
-
-.ai-progress-subtitle {
-    font-size: 10px;
-    color: #71717a;
-}
-
-/* -- section labels (By model / Cost) ---------------------------------- */
-
-.ai-section-label {
-    font-size: 10px;
-    font-weight: 700;
-    color: #52525b;
-    letter-spacing: 0.05em;
-    padding: 4px 0 0 0;
-}
-
-/* -- per-model breakdown / key-value rows -------------------------------- */
-
-.ai-model-name {
-    font-size: 11px;
-    color: #a1a1aa;
-}
-
-.ai-model-cost {
-    font-size: 11px;
-    font-weight: 600;
-    color: #71717a;
-}
-
-/* -- 7-day sparkline ------------------------------------------------------ */
-
-.ai-spark-row {
-    padding: 2px 6px 0 6px;
-}
-
-.ai-spark-col {
-    /* one calendar day: bar area on top, weekday label underneath */
-}
-
-.ai-spark-bars {
-    height: 24px;
-}
-
-.ai-spark-day {
-    font-size: 9px;
-    color: #71717a;
-    margin-top: 3px;
-}
-
-.ai-spark-today {
-    font-weight: 700;
-    color: #e4e4e7;
-}
-
-/* Baseline stub for days with no usage, so the week grid stays visible. */
-.ai-spark-empty {
-    height: 2px;
-    margin: 0 2px;
-    border-radius: 1px;
-    background-color: rgba(255, 255, 255, 0.10);
-}
-
-/* Fallback single-tool history bar: CodexBar's teal. */
-.ai-spark-bar {
-    border-radius: 2px;
-    margin: 0 2px;
-    background-gradient-direction: vertical;
-    background-gradient-start: #49c3d1;
-    background-gradient-end: #2f8fb0;
-}
-
-/* Per-tool segment of a stacked day column; its brand background-color is
- * set inline from JS. Only the base segment keeps rounded bottom corners. */
-.ai-spark-seg {
-    margin: 0 2px;
-}
-
-/* -- footer ------------------------------------------------------------- */
-
-.ai-footer {
-    font-size: 10px;
-    color: #71717a;
-}
+/* Small history charts use the desktop accent rather than a custom palette. */
+.ai-spark-row { padding: 4px 12px; }
+.ai-spark-bars { height: 24px; }
+.ai-spark-day { font-size: 0.7em; margin-top: 3px; }
+.ai-spark-today { font-weight: 700; }
+.ai-spark-empty { height: 2px; margin: 0 2px; background-color: rgba(127,127,127,0.3); }
+.ai-spark-bar, .ai-spark-seg { margin: 0 2px; border-radius: 2px; background-color: -st-accent-color; }
+.ai-split-seg { height: 6px; }
+.ai-legend { margin-top: 3px; }
+.ai-legend-cell { margin-right: 10px; }
+.ai-legend-label { font-size: 0.8em; }
+.ai-progress-track { height: 6px; border-radius: 3px; background-color: rgba(127,127,127,0.2); }
+.ai-progress-fill { height: 6px; border-radius: 3px; }
+.ai-fill-ok { background-color: -st-accent-color; }
+.ai-fill-warn { background-color: #e5a50a; }
+.ai-fill-danger { background-color: #ed333b; }
+.ai-footer { font-size: 0.75em; }
+.ai-footer-row { padding: 4px 12px; }

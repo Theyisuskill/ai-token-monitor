@@ -154,10 +154,8 @@ DEFAULTS: dict[str, Any] = {
         # Google-OAuth fallback. Off by default — it probes local server ports
         # and only yields data while Antigravity is running; enable to try.
         "antigravity": {"enabled": False, "interval_s": 120},
-        # Codex/ChatGPT: "auto" = on only when ~/.codex/auth.json is actually
-        # there, so it costs nothing for people without the Codex CLI and
-        # needs no config from the people who have it.
-        "codex": {"enabled": "auto", "interval_s": 120},
+        # Codex: provider-confirmed quotas from local rollout logs, no HTTP.
+        "codex": {"enabled": "auto", "interval_s": 30, "source": "local"},
     },
     # "preset": use the plan presets. "auto": calibrate from observed peaks.
     "budget_mode": "preset",

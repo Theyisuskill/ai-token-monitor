@@ -61,6 +61,12 @@ down to the actual reset; sections appear only for the tools you use.*
 - **Idempotent ingestion.** Every record carries a `dedup_key` derived from
   the log line (message id / request id / uuid) with a UNIQUE constraint, so
   file rewrites, inode rotation and full rescans are all safe.
+  Codex keys use the session's cumulative token counters: re-emitting the
+  same usage with a new timestamp or updated rate limits does not count as
+  another request. Events without cumulative counters retain a line-based
+  fallback. Existing records are migrated once per available log, in a
+  transaction; only duplicates proven by those logs are removed. History
+  whose original logs are unavailable is preserved.
 
 ## Install (per-user, for development)
 
@@ -79,7 +85,7 @@ Useful checks:
 $ ai-token-monitor --summary today | jq .totals
 $ ai-token-monitor --history month | jq '.monthly'   # calendar months
 $ ai-token-monitor --sessions 5 | jq                 # recent conversations
-$ ai-token-monitor --live | jq                       # why is a bar an estimate?
+$ ai-token-monitor --live | jq                       # quota sources and connection status
 $ busctl --user call io.github.theyisuskill.AITokenMonitor \
     /io/github/theyisuskill/AITokenMonitor \
     io.github.theyisuskill.AITokenMonitor1 GetSnapshot
@@ -135,25 +141,42 @@ value. Any explicit `budgets:` key (`claude_5h`, `claude_weekly`, `gemini_5h`,
 
 ### Real limits (live)
 
-The bars above are *estimates* — they scale token spend by a dollar-equivalent
-budget. For Claude Code the daemon can instead show the provider's **real**
-5-hour and weekly percentage with its exact reset, read from the OAuth usage
-API using the token Claude Code already stores in `~/.claude/.credentials.json`
-(the token needs the `user:profile` scope). Such a bar is marked with a teal
-"live" dot and drives the top-bar percentage and alerts. This is the one
-network feature — an opt-in relaxation of the local-only default — and it is
-**read-only**: the daemon never rewrites the credential file. Configure under
-`live_limits:` (enabled for `claude_code` by default; set `enabled: false` to
-stay estimate-only). See `docs/codexbar-port-roadmap.md` for the other
-providers this pattern can cover.
+**Claude Code and Codex show provider-confirmed quota percentages only.**
+Token counts and estimated API costs remain available as separate usage
+information; they never become subscription quota percentages, including in
+the panel, Summary, desktop alerts, and Waybar.
+
+Codex reads `rate_limits` from `event_msg/token_count` events in local
+`rollout-*.jsonl` files under `$CODEX_HOME/sessions` (default
+`~/.codex/sessions`). Each window is classified by its `window_minutes`,
+including weekly-only plans. No separate HTTP request or credential is needed.
+The event timestamp is the confirmation time, preserved across rescans.
+Override the directory with `live_limits.codex.sessions_root` if needed.
+
+Claude reads its confirmed 5-hour and weekly percentages from the OAuth usage
+API using the credential in `~/.claude/.credentials.json` (`user:profile`
+scope). It never rewrites the credential. This poller is enabled by default;
+set `live_limits.claude_code.enabled: false` to disable network polling.
+
+Confirmed results persist in SQLite across daemon restarts. Each provider
+card shows the confirmation date and local time. If a Claude poll fails,
+the previous confirmed percentage may remain for up to 30 minutes, marked as
+stale. Once that time elapses or its quota window resets, the current bar says
+"Limit unavailable". The last recorded percentage remains explicitly labeled
+as historical data with its confirmation time; no estimated percentage replaces
+it. Cached data does not trigger new threshold alerts.
 
 `enabled` also takes `auto`, which switches a poller on only when that
-provider's credential is actually on this machine — the default for the Codex
+provider is actually on this machine — the default for the Codex
 poller, so it works out of the box if you use the Codex CLI and costs nothing
-if you don't. When a poller can't report, the bar silently falls back to the
-estimate and the popup says why, *except* for states that aren't faults (a tool
+if you don't. When a poller can't report, the popup says why, *except* for states that aren't faults (a tool
 you simply aren't running stays quiet). `ai-token-monitor --live` prints the
 full picture on demand.
+
+Claude HTTP 429 responses trigger an exponential cooldown (up to 30 minutes),
+extended when the server's `Retry-After` asks for a longer pause. During that
+pause no new usage request is sent. Cached percentages expire after 30 minutes
+and each window is discarded at its reset time, including after a successful poll.
 
 Plans can also be picked from the extension's **Preferences window** (no YAML
 required): choices are persisted to `~/.config/ai-token-monitor/ui.yaml`,
@@ -168,6 +191,12 @@ Around the bars the popup also shows:
   re-arms once usage drops back below it.
 - **By model** — a collapsible top-3 cost breakdown per tool for the week.
 - A 7-day spend sparkline above the footer.
+
+The popup inherits the active GNOME Shell theme, including its background,
+buttons and level-bar accent. Its width and height are constrained to the
+current monitor's usable work area, accounting for display and text scaling.
+Navigation buttons wrap on narrow layouts and long views scroll vertically.
+Monitor and scaling changes update the layout while the extension is running.
 
 ### History
 

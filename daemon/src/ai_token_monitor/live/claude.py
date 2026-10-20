@@ -37,9 +37,11 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import time
 import urllib.error
 import urllib.request
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
 
@@ -142,10 +144,38 @@ class ClaudeLimitsPoller(LivePoller):
     tool = "claude_code"
     credential_paths = (DEFAULT_CRED,)
 
+    def __init__(self, settings):
+        super().__init__(settings)
+        self._retry_at = 0.0
+        self._backoff_s = 0.0
+
+    def _rate_limited(self, headers) -> dict[str, Any]:
+        # Honor both Retry-After forms. Without a usable server hint, back
+        # off exponentially instead of hitting the same limit every tick.
+        self._backoff_s = min(1800.0, max(self.interval * 2.0,
+                                        self._backoff_s * 2.0))
+        delay = self._backoff_s
+        value = headers.get("Retry-After") if headers else None
+        if value:
+            try:
+                seconds = float(value)
+            except ValueError:
+                try:
+                    seconds = parsedate_to_datetime(value).timestamp() - time.time()
+                except (TypeError, ValueError, OverflowError):
+                    seconds = 0.0
+            if math.isfinite(seconds):
+                delay = max(delay, seconds)
+        self._retry_at = time.monotonic() + delay
+        return _empty("rate_limited", retry_after_s=delay)
+
     def _cred_path(self) -> Path:
         return Path(self.settings.get("credentials", DEFAULT_CRED)).expanduser()
 
     def poll(self) -> dict[str, Any]:
+        remaining = self._retry_at - time.monotonic()
+        if remaining > 0:
+            return _empty("rate_limited", retry_after_s=remaining)
         oauth = read_oauth(self._cred_path())
         if oauth is None:
             return _empty("credentials_missing")
@@ -182,7 +212,7 @@ class ClaudeLimitsPoller(LivePoller):
             if exc.code == 403:
                 return _empty("scope_missing")
             if exc.code == 429:
-                return _empty("rate_limited")
+                return self._rate_limited(exc.headers)
             log.warning("claude live: HTTP %s", exc.code)
             return _empty(f"http_{exc.code}")
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
@@ -193,4 +223,6 @@ class ClaudeLimitsPoller(LivePoller):
 
         if not isinstance(payload, dict):
             return _empty("bad_response")
+        self._backoff_s = 0.0
+        self._retry_at = 0.0
         return normalize_usage(payload, plan_tier)

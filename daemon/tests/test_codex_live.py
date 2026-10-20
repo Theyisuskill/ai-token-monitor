@@ -109,7 +109,7 @@ def test_missing_rate_limit_yields_empty_windows():
 
 def test_read_tokens_and_credentials_missing(tmp_path):
     # No file at all -> credentials_missing, no network.
-    poller = CodexLimitsPoller({"credentials": str(tmp_path / "nope.json")})
+    poller = CodexLimitsPoller({"source": "api", "credentials": str(tmp_path / "nope.json")})
     out = poller.poll()
     assert out["status"] == "credentials_missing"
     assert out["windows"] == {}
@@ -120,7 +120,7 @@ def test_auth_json_without_access_token(tmp_path):
     path.write_text(json.dumps({"tokens": {"refresh_token": "r"},
                                 "last_refresh": "2026-07-11T12:00:00Z"}))
     assert read_tokens(path) == {"refresh_token": "r"}
-    out = CodexLimitsPoller({"credentials": str(path)}).poll()
+    out = CodexLimitsPoller({"source": "api", "credentials": str(path)}).poll()
     assert out["status"] == "credentials_missing"
 
 

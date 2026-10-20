@@ -79,10 +79,12 @@ live_limits:
     # "Desktop app" client; nothing is auto-discovered from the installed CLI.
     # oauth_client_id: "....apps.googleusercontent.com"
     # oauth_client_secret: "..."
-  # OpenAI Codex CLI: on as soon as ~/.codex/auth.json exists, off otherwise.
+  # Provider-confirmed limits from Codex rollout logs. No network request.
   codex:
     enabled: auto
-    interval_s: 120
+    source: local
+    interval_s: 30
+    # sessions_root: ~/.codex/sessions  # defaults to $CODEX_HOME/sessions
 
 # Optional. daily/weekly/monthly are informational only. Any per-tool key here
 # (claude_5h, claude_weekly, gemini_5h, gemini_weekly) OVERRIDES the plan preset

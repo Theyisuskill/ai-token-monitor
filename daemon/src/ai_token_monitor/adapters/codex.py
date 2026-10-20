@@ -29,8 +29,10 @@ subset of ``input_tokens``; ``reasoning_output_tokens`` a subset of
 ``output_tokens``. The model comes from the surrounding ``turn_context``
 entries, remembered per file since a tail chunk may not include one.
 
-Dedup key: hash of the raw line (the cumulative counter inside makes lines
-unique within a session) plus the rollout filename.
+Dedup key: the rollout filename plus a hash of its cumulative token counters.
+Codex can re-emit a token_count with a new timestamp or rate_limits but the
+same cumulative usage; those events must not charge last_token_usage twice.
+Old events without cumulative usage retain the raw-line hash fallback.
 """
 
 from __future__ import annotations
@@ -50,6 +52,38 @@ log = logging.getLogger(__name__)
 FALLBACK_MODEL = "gpt-5-codex"
 
 
+def _counts(usage: dict) -> tuple[int, int, int] | None:
+    result = []
+    for key in ("input_tokens", "cached_input_tokens", "output_tokens"):
+        raw = usage.get(key, 0)
+        if raw is None:
+            raw = 0
+        if isinstance(raw, bool) or not isinstance(raw, (int, str)):
+            return None
+        try:
+            value = int(raw)
+        except ValueError:
+            return None
+        if value < 0:
+            return None
+        result.append(value)
+    if result[1] > result[0]:
+        return None
+    return tuple(result)
+
+
+def usage_keys(path: Path, line: str, info: dict) -> tuple[str, str]:
+    """Legacy and current keys; independent of timestamps, quota updates or model."""
+    digest = hashlib.sha1(line.encode("utf-8", "replace")).hexdigest()[:24]
+    legacy = f"{path.stem}:{digest}"
+    total = info.get("total_token_usage")
+    counters = _counts(total) if isinstance(total, dict) else None
+    if counters is None or counters[0] + counters[2] <= 0:
+        return legacy, legacy
+    digest = hashlib.sha256(json.dumps(counters).encode()).hexdigest()[:32]
+    return legacy, f"{path.stem}:total:{digest}"
+
+
 @register
 class CodexAdapter(Adapter):
     name = "codex"
@@ -66,6 +100,18 @@ class CodexAdapter(Adapter):
 
     def matches(self, path: Path) -> bool:
         return path.suffix == ".jsonl" and path.name.startswith("rollout-")
+
+    def dedup_migration(self, path: Path, lines: Iterable[str]) -> Iterator[tuple[str, str]]:
+        # Only records accepted by the parser can correspond to stored usage.
+        # Parsing a full file also restores model context before tailing resumes.
+        for line in lines:
+            line = line.rstrip("\r\n")
+            if not list(self.parse(path, (line,))):
+                continue
+            info = json.loads(line)["payload"]["info"]
+            old, new = usage_keys(path, line, info)
+            if old != new:
+                yield old, new
 
     def parse(self, path: Path, lines: Iterable[str]) -> Iterator[UsageRecord]:
         key = str(path)
@@ -101,13 +147,14 @@ class CodexAdapter(Adapter):
             except (KeyError, TypeError, ValueError):
                 continue
 
-            raw_input = int(usage.get("input_tokens") or 0)
-            cached = int(usage.get("cached_input_tokens") or 0)
-            output = int(usage.get("output_tokens") or 0)
-            if raw_input + cached + output <= 0:
+            counters = _counts(usage)
+            if counters is None:
+                continue
+            raw_input, cached, output = counters
+            if raw_input + output <= 0:
                 continue
 
-            digest = hashlib.sha1(line.encode("utf-8", "replace")).hexdigest()
+            _legacy, dedup_key = usage_keys(path, line, info)
             yield UsageRecord(
                 tool=self.name,
                 model=self._models.get(key, FALLBACK_MODEL),
@@ -117,5 +164,5 @@ class CodexAdapter(Adapter):
                 cache_read_tokens=cached,
                 cache_write_tokens=0,
                 session_id=path.stem,
-                dedup_key=f"{path.stem}:{digest[:24]}",
+                dedup_key=dedup_key,
             )

@@ -6,7 +6,12 @@ missing scope, expired token) all return before any HTTP request.
 
 import json
 import time
+import urllib.error
 from datetime import datetime, timedelta, timezone
+from email.utils import format_datetime
+from unittest.mock import Mock
+
+import pytest
 
 from ai_token_monitor.live.claude import ClaudeLimitsPoller, normalize_usage
 
@@ -108,3 +113,61 @@ def test_expired_token_is_not_refreshed(tmp_path):
         "expiresAt": int((time.time() - 60) * 1000)})
     out = _poller(path).poll()
     assert out["status"] == "token_expired"
+
+
+@pytest.mark.parametrize("retry_after,expected", [
+    ("600", 600),
+    ("broken", 180),
+    (None, 180),
+    ("-1", 180),
+    ("nan", 180),
+    ("inf", 180),
+    (format_datetime(datetime.fromtimestamp(1600, timezone.utc)), 600),
+])
+def test_rate_limit_waits_before_next_request(tmp_path, monkeypatch, retry_after, expected):
+    from ai_token_monitor.live import claude
+
+    monkeypatch.setattr(claude.time, "time", lambda: 1000.0)
+    monotonic = Mock(return_value=100.0)
+    monkeypatch.setattr(claude.time, "monotonic", monotonic)
+    path = _write_cred(tmp_path, {
+        "accessToken": "test-token", "scopes": ["user:profile"]})
+    poller = _poller(path)
+    headers = {"Retry-After": retry_after} if retry_after else {}
+    request = Mock(side_effect=urllib.error.HTTPError(
+        claude.USAGE_URL, 429, "Too Many Requests", headers, None))
+    monkeypatch.setattr(claude._http, "urlopen", request)
+
+    assert poller.poll()["retry_after_s"] == expected
+    monotonic.return_value = 100.0 + expected - 1
+    assert poller.poll()["status"] == "rate_limited"
+    assert request.call_count == 1
+    monotonic.return_value = 100.0 + expected
+    assert poller.poll()["status"] == "rate_limited"
+    assert request.call_count == 2
+
+
+def test_backoff_grows_and_resets_on_success(tmp_path, monkeypatch):
+    from ai_token_monitor.live import claude
+
+    clock = Mock(return_value=100.0)
+    monkeypatch.setattr(claude.time, "monotonic", clock)
+    path = _write_cred(tmp_path, {
+        "accessToken": "test-token", "scopes": ["user:profile"]})
+    original = path.read_bytes()
+    poller = _poller(path)
+    response = Mock()
+    response.__enter__ = Mock(return_value=response)
+    response.__exit__ = Mock(return_value=False)
+    response.read.return_value = json.dumps(REAL_PAYLOAD).encode()
+    error = urllib.error.HTTPError(claude.USAGE_URL, 429, "limit", {}, None)
+    request = Mock(side_effect=[error, error, response, error])
+    monkeypatch.setattr(claude._http, "urlopen", request)
+
+    assert poller.poll()["retry_after_s"] == 180
+    clock.return_value = 280.0
+    assert poller.poll()["retry_after_s"] == 360
+    clock.return_value = 640.0
+    assert poller.poll()["status"] == "ok"
+    assert poller.poll()["retry_after_s"] == 180
+    assert path.read_bytes() == original
