@@ -38,9 +38,9 @@ GNOME Shell top bar  ──D-Bus(session)──►  daemon (GLib main loop)
    Adapters: `claude_code`, `gemini_cli` (=Antigravity/"agy", reads
    `~/.gemini/antigravity-cli/conversations/*.db` protobuf), `codex`, `opencode`
    (`~/.local/share/opencode/opencode.db`).
-2. **Live pollers** (`live/`, NETWORK, opt-in): read a credential already on disk
-   and fetch the provider's **real** 5h/weekly % + reset — not a dollar-scaled
-   estimate. Subclass `LivePoller` (`name`, `tool`, `poll()->dict`), `@register`,
+2. **Limit readers** (`live/`, local or opt-in network): read the provider's
+   **confirmed** 5h/weekly % + reset from local logs or an existing credential.
+   Never turn API-equivalent spend into Claude/Codex quota percentages. Subclass `LivePoller` (`name`, `tool`, `poll()->dict`), `@register`,
    configured under `live_limits.<name>`. **READ-ONLY** — never rewrite a
    credential file (don't race the CLI for its login). `poll()` runs off the main
    loop, must never raise (every failure → a `status` string), stdlib only.
@@ -50,7 +50,12 @@ GNOME Shell top bar  ──D-Bus(session)──►  daemon (GLib main loop)
      on the 5h/week snapshot entries + `real_scoped` per model + `extra_usage`.
    - `antigravity` (off): loopback to the running agy language server via /proc
      port scan, then Google-OAuth fallback (`~/.gemini/oauth_creds.json`).
-   - `codex` (off): `~/.codex/auth.json` → `chatgpt.com/backend-api/wham/usage`.
+   - `codex` (`enabled: auto`, every 30s): reads provider-confirmed `rate_limits`
+     from local rollout logs (`$CODEX_HOME/sessions`, or `sessions_root`). No HTTP
+     or credential is needed by default; `source: api` is an explicit legacy mode.
+     Preserve the log event timestamp when rereading; never refresh its age.
+   - Successful results persist in SQLite (`confirmed_limits`). Claude HTTP 429
+     responses honor `Retry-After` and back off exponentially.
 
 ## Snapshot shape (what the extension reads)
 
@@ -59,8 +64,12 @@ total_tokens,...}], totals}`), `daily` (7-day series), `budgets` (plan-scaled
 denominators), `windows` (per-tool `{"5h":bool,"weekly":bool}` — which limit
 windows that plan actually meters), `tools` (tools with usage), `ui`,
 `updated`, and `live` (per-tool poller status). On a tool's `five_hours`/`week` entry a poller may add
-`real{used_percent,resets_at,source}` and (week) `real_scoped[]`. The extension
-**prefers `real` over the dollar estimate** and marks it with a teal "live" dot.
+`real{used_percent,resets_at,source,confirmed_at}` and (week) `real_scoped[]`.
+`live[tool].last_confirmed` preserves the recorded values and confirmation time
+across restarts. Current values expire after 30 minutes or their reset; older
+values are explicitly historical. **Claude and Codex never fall back to
+estimated quota percentages**, including the panel, alerts, Summary and Waybar.
+Their snapshot budget denominators are zero and `confirmed_only` lists them.
 A `live` entry may carry `quiet: true` (`live.QUIET_STATUSES`) meaning "nothing
 to report, not a failure" — the UI hides its amber warning for those.
 
@@ -75,8 +84,10 @@ History tab and caches it (`HISTORY_TTL_MS`). Same data from the CLI:
 
 5h and weekly are **rolling** windows anchored to first use (Claude/Antigravity
 reset on a rolling basis, NOT calendar). Providers publish no dollar figure for
-those limits, so bars are scaled by an API-equivalent budget that adapts to the
-user's plan (`plans:` + `PLAN_PRESETS`, or `budget_mode: auto` self-calibrates).
+those limits. Claude and Codex show only confirmed provider percentages; local
+token counts and estimated API cost are separate context. Other providers may
+use the existing plan-scaled estimates (`plans:` + `PLAN_PRESETS`, or
+`budget_mode: auto` self-calibrates).
 Antigravity meters two independent pools (Gemini vs Claude&GPT) → `QUOTA_GROUPS`.
 
 **Not every plan has both windows.** A `PLAN_PRESETS` window set to `None`
@@ -91,16 +102,21 @@ wins when set.
 
 ## Extension UI
 
-- Popup: **provider switcher** — a tab row (Summary, one tab per tool, and an
-  icon-only **History** tab), each opening a
-  detailed card (Session, Weekly, per-model breakdown, cost). `ui.layout` =
+- Popup: **provider switcher** — accessible native icon buttons for Summary,
+  each provider, and History. Buttons wrap when needed; provider views show
+  Session, Weekly, per-model breakdown and cost. `ui.layout` =
   `switcher` (default) | `stacked`. `_addTabBar`/`_addProviderDetail` in
   `extension.js`. Prefs has a Popup-layout combo.
-- Look mirrors CodexBar: near-black card, thin teal pill meters (`.ai-fill-ok`),
-  zinc type, per-window reset countdowns, teal sparkline. Kept: per-tool brand
-  dot, amber/red severity at 70/90%.
-- Panel top-bar (`ui.panel` = percent|icon|today) shows max pressure (real % when
-  available). Alerts at 70/90/100% (real % preferred).
+- **Confirmed user preference: native Fedora/GNOME appearance.** Inherit Shell
+  backgrounds, typography, buttons and accent; use `BarLevel` for read-only
+  quota bars. Avoid custom blue-black cards and oversized percentages.
+- `popupLayout()` bounds width and height to the current monitor work area,
+  accounting for display and text scaling. Monitor/scaling changes rebuild
+  the layout. Long content scrolls vertically; labels wrap or ellipsize.
+- Provider status distinguishes confirmed, saved and unavailable data and
+  displays the last confirmation date/time. Cached quotas do not trigger alerts.
+- Panel top-bar (`ui.panel` = percent|icon|today) shows max pressure. Claude
+  and Codex percentages and 70/90/100% alerts require confirmed values.
 
 ## Install / test on this machine
 
@@ -123,9 +139,9 @@ so editing the repo changes nothing until you sync:
 
 Verify the daemon live: `ai-token-monitor --summary all | jq`, or call
 `GetSnapshot` over D-Bus and check `live` + per-entry `real`. `--live` polls
-every enabled poller once and prints the raw result (why a bar is an estimate)
-— note each call is a real request, so don't loop it against a rate-limited
-provider. Logs:
+every enabled reader once and prints its source/status. Codex is a local read;
+Claude/other network readers make real requests, so do not loop them against a
+rate-limited provider. Logs:
 `journalctl --user -u ai-token-monitor -f`.
 
 ## Conventions
@@ -135,6 +151,13 @@ provider. Logs:
   no network. Keep them green. **pytest is NOT installed system-wide on this
   machine**: one-time `python3 -m venv ~/.venvs/aitm && ~/.venvs/aitm/bin/pip
   install pytest pyyaml`, then `cd daemon && ~/.venvs/aitm/bin/python -m pytest -q`.
+- UI policy/layout tests: `node --test extension/tests/*.test.cjs`; syntax
+  checks: `node --check extension/extension.js` and `node --check extension/prefs.js`.
+- Codex dedup keys use cumulative input/cache/output counters per rollout.
+  Timestamp/quota-only repeats share the same key even after restart. A per-log
+  transaction rekeys legacy rows and removes proven duplicates automatically;
+  preserve history whose logs are unavailable. Missing counters retain the
+  original line-hash fallback.
 - New adapters/pollers register via a decorator; ship third-party ones as pip
   packages exposing the `ai_token_monitor.adapters` entry-point group.
 - GPL-3.0-or-later. Packaging: RPM + extensions.gnome.org (no Flatpak — the
